@@ -1,0 +1,16 @@
+{
+  "SONA": [
+    {
+      "date": "2026-03-18",
+      "predicted_close": 459.27,
+      "actual_close": 456.0,
+      "error_pct": -0.71
+    },
+    {
+      "date": "2026-03-19",
+      "predicted_close": 459.27,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ]
+}
