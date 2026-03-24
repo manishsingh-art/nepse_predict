@@ -1,0 +1,22 @@
+NEPSE Prediction Report — NABIL
+Generated: 2026-03-24T14:38:50
+Dataset : D:\new_py\nepse_predict\data\NABIL.csv
+Plot    : D:\new_py\nepse_predict\outputs\NABIL_20260324_143850.png
+
+Trend: BULLISH (20d=+9.46%, pred5d=+6.32%)
+Recommendation: BUY — Predicted +6.32% over ~5 sessions with normal volatility.
+
+Model validation (time-based holdout):
+- Linear Regression: MAE=3.771, RMSE=6.427 (train=925, valid=231)
+- Random Forest    : MAE=4.640, RMSE=6.646 (train=925, valid=231)
+
+Forecast next 7 business days (NPR):
+- 2026-03-26: blend=559.37 (lr=563.83, rf=556.97), Δ%=+2.64%
+- 2026-03-27: blend=563.52 (lr=571.17, rf=559.39), Δ%=+0.74%
+- 2026-03-30: blend=572.17 (lr=575.23, rf=570.52), Δ%=+1.54%
+- 2026-03-31: blend=575.38 (lr=579.54, rf=573.14), Δ%=+0.56%
+- 2026-04-01: blend=579.46 (lr=581.48, rf=578.38), Δ%=+0.71%
+- 2026-04-02: blend=581.30 (lr=584.58, rf=579.54), Δ%=+0.32%
+- 2026-04-03: blend=585.31 (lr=585.61, rf=585.15), Δ%=+0.69%
+
+Ollama analysis: (not available — ollama not running or request failed)

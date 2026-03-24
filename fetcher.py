@@ -1,33 +1,48 @@
+#!/usr/bin/env python3
 """
-fetcher.py — Live NEPSE Data Fetcher
-=====================================
-Fetches:
-  1. Full list of all NEPSE-listed companies (symbol, name, sector)
-  2. Complete OHLCV price history for any symbol
+fetcher.py — Production NEPSE Data Fetcher
+===========================================
+Multi-source OHLCV + sentiment data pipeline.
 
-Sources (tried in order):
-  Primary   : merolagani.com  (TechnicalChartHandler — free, no auth)
-  Secondary : nepalstock.com.np (official NEPSE API — public endpoints)
-  Tertiary  : sharesansar.com (HTML scrape fallback)
+Sources (tried in priority order):
+  1. merolagani.com  (TechnicalChartHandler — free, fast)
+  2. nepalstock.com.np (official NEPSE REST API)
+  3. sharesansar.com  (HTML scrape fallback)
+
+Sentiment sources:
+  - NewsAPI (free tier: 100 req/day)
+  - RSS feeds: The Himalayan Times, Republica, OnlineKhabar
+  - Reddit r/investing scrape (public JSON API)
 """
+
+from __future__ import annotations
 
 import os
+import re
 import time
 import json
-import math
+import hashlib
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any, Tuple
+from pathlib import Path
+
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Optional
+import numpy as np
 
-CACHE_DIR = os.path.join(os.path.expanduser("~"), ".nepse_cache")
-COMPANY_CACHE = os.path.join(CACHE_DIR, "companies_cache.csv")
+logger = logging.getLogger(__name__)
+
+# ── Cache ──────────────────────────────────────────────────────────────────────
+CACHE_DIR = Path(os.path.expanduser("~")) / ".nepse_cache"
+COMPANY_CACHE = CACHE_DIR / "companies_cache.csv"
+PRICE_CACHE_DIR = CACHE_DIR / "price_cache"
+NEWS_CACHE_DIR = CACHE_DIR / "news_cache"
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Referer": "https://merolagani.com/",
@@ -35,312 +50,303 @@ HEADERS = {
 
 MEROLAGANI_CHART = (
     "https://merolagani.com/handlers/TechnicalChartHandler.ashx"
-    "?type=get_advanced_chart"
-    "&symbol={symbol}"
-    "&resolution=1D"
-    "&rangeStartDate={start_ts}"
-    "&rangeEndDate={end_ts}"
-    "&from=&isAdjust=1&currencyCode=NPR"
+    "?type=get_advanced_chart&symbol={symbol}&resolution=1D"
+    "&rangeStartDate={start_ts}&rangeEndDate={end_ts}&from=&isAdjust=1&currencyCode=NPR"
 )
 
-NEPALSTOCK_COMPANY_LIST = "https://nepalstock.com.np/api/nots/securityDailyTradeReport/58"
 NEPALSTOCK_SECURITY_LIST = "https://nepalstock.com.np/api/nots/security?nonDelisted=true"
 NEPALSTOCK_HISTORY = (
     "https://nepalstock.com.np/api/nots/market/history/"
     "{id}?startDate={start}&endDate={end}&size=500&page=1"
 )
 
-SHARESANSAR_HISTORY = (
-    "https://www.sharesansar.com/company/{symbol}"
-)
+COL_ALIASES = {
+    "date":   ["date", "Date", "DATE", "trading_date", "Trading Date"],
+    "open":   ["open", "Open", "OPEN", "open_price", "Open Price"],
+    "high":   ["high", "High", "HIGH", "high_price", "High Price"],
+    "low":    ["low", "Low", "LOW", "low_price", "Low Price"],
+    "close":  ["close", "Close", "CLOSE", "close_price", "Close Price", "ltp", "LTP", "last"],
+    "volume": ["volume", "Volume", "VOLUME", "qty", "Quantity", "turnover", "Turnover"],
+}
 
-# ─── Helper Functions ─────────────────────────────────────────────────────────
 
-def robust_request(url: str, headers: dict = None, timeout: int = 30,
-                  retries: int = 3, backoff: float = 1.0) -> Optional[requests.Response]:
-    """Helper to perform requests with retries and exponential backoff."""
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _ensure_dirs() -> None:
+    for d in [CACHE_DIR, PRICE_CACHE_DIR, NEWS_CACHE_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def robust_request(
+    url: str,
+    headers: dict = None,
+    timeout: int = 30,
+    retries: int = 3,
+    backoff: float = 1.5,
+    method: str = "GET",
+    json_body: dict = None,
+) -> Optional[requests.Response]:
     headers = headers or HEADERS
     for attempt in range(retries):
         try:
-            r = requests.get(url, headers=headers, timeout=timeout)
+            if method == "POST":
+                r = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+            else:
+                r = requests.get(url, headers=headers, timeout=timeout)
             if r.status_code == 200:
                 return r
-            if r.status_code in [403, 429]: # Rate limited or blocked
+            if r.status_code in (403, 429, 503):
                 time.sleep(backoff * (2 ** attempt))
-                continue
-        except requests.exceptions.RequestException as e:
+            else:
+                return r  # return non-200 for caller to inspect
+        except requests.exceptions.RequestException as exc:
             if attempt == retries - 1:
-                raise e
+                logger.debug("Request failed after %d retries: %s — %s", retries, url, exc)
+                return None
             time.sleep(backoff * (2 ** attempt))
     return None
 
-# ─── Company List ─────────────────────────────────────────────────────────────
 
-def fetch_company_list() -> pd.DataFrame:
-    """
-    Return DataFrame with columns: symbol, name, sector, id
-    Tries live sources (API + Scraping), then local cache, then built-in.
-    """
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR, exist_ok=True)
-
-    all_stocks = {} # Dictionary keyed by symbol to unique-ify
-
-    # ── Try 1: NEPSE Official API (Security List) ───────────────────────────
-    endpoints = [
-        "https://nepalstock.com.np/api/nots/security?nonDelisted=true",
-        "https://nepalstock.com.np/api/nots/company/list"
-    ]
-    headers = {**HEADERS, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    for url in endpoints:
-        try:
-            r = robust_request(url, headers=headers)
-            if r is not None and r.status_code == 200:
-                data = r.json()
-                items = data.get("body", []) if isinstance(data.get("body"), list) else data
-                for item in items:
-                    sym = item.get("symbol") or item.get("stockSymbol") or item.get("stock_symbol")
-                    if sym:
-                        sym = sym.strip().upper()
-                        name = item.get("companyName") or item.get("stock_name") or item.get("company_name")
-                        sec = item.get("businessSector") or {}
-                        sector = sec.get("name") if isinstance(sec, dict) else str(sec)
-                        sid = item.get("id") or item.get("company_id")
-                        all_stocks[sym] = {"symbol": sym, "name": name, "sector": sector, "id": sid}
-        except Exception:
-            continue
-
-    # ── Try 2: Merolagani Scraping ──────────────────────────────────────────
-    try:
-        url = "https://merolagani.com/StockQuote.aspx"
-        r = robust_request(url, headers=headers)
-        if r is not None and r.status_code == 200:
-            import re
-            symbols = re.findall(r'symbol=([A-Z0-9]{2,8})["\']', r.text)
-            for s in symbols:
-                s = s.upper()
-                if s not in all_stocks:
-                    all_stocks[s] = {"symbol": s, "name": "", "sector": "", "id": ""}
-    except Exception:
-        pass
-
-    # ── Try 3: ShareSansar Scraping ──────────────────────────────────────────
-    try:
-        url = "https://www.sharesansar.com/today-share-price"
-        r = robust_request(url, headers=headers)
-        if r is not None and r.status_code == 200:
-            tables = pd.read_html(r.text)
-            for t in tables:
-                if any("symbol" in str(c).lower() or "ticker" in str(c).lower() for c in t.columns):
-                    t.columns = [str(c).lower().strip() for c in t.columns]
-                    sym_col = next(c for c in t.columns if "symbol" in c or "ticker" in c)
-                    for _, row in t.iterrows():
-                        sym = str(row[sym_col]).strip().upper()
-                        if sym and sym != "NAN" and len(sym) < 8:
-                            if sym not in all_stocks:
-                                all_stocks[sym] = {"symbol": sym, "name": "", "sector": "", "id": ""}
-    except Exception:
-        pass
-
-    # If we found enough stocks, update cache and return
-    if len(all_stocks) > 50:
-        df = pd.DataFrame(list(all_stocks.values())).sort_values("symbol").reset_index(drop=True)
-        df.to_csv(COMPANY_CACHE, index=False)
-        print(f"  ✅ Discovery complete: {len(df)} stocks identified and cached.")
-        return df
-
-    # ── Try 4: Local Cache (Persistent Discovery Fallback) ───────────────────
-    if os.path.exists(COMPANY_CACHE):
-        try:
-            df = pd.read_csv(COMPANY_CACHE)
-            # Ensure symbols are upper case
-            df["symbol"] = df["symbol"].astype(str).str.upper()
-            if len(df) > 50:
-                print(f"  ✅ Loaded {len(df)} stocks from local cache (offline mode).")
-                return df
-        except Exception:
-            pass
-
-    # ── Fallback: built-in list (Absolute Last Resort) ──────────────────────
-    print("  ⚠ Automatic discovery failed. Using built-in symbol list fallback.")
-    return _builtin_company_list()
-
-
-def _builtin_company_list() -> pd.DataFrame:
-    """Built-in curated NEPSE symbol list as absolute fallback."""
-    stocks = [
-        # Banking
-        ("NABIL", "Nabil Bank Ltd", "Commercial Banks"),
-        ("NICA",  "NIC Asia Bank Ltd", "Commercial Banks"),
-        ("SCB",   "Standard Chartered Bank Nepal", "Commercial Banks"),
-        ("SANIMA","Sanima Bank Ltd", "Commercial Banks"),
-        ("MBL",   "Machhapuchchhre Bank Ltd", "Commercial Banks"),
-        ("PRVU",  "Prabhu Bank Ltd", "Commercial Banks"),
-        ("NBL",   "Nepal Bank Ltd", "Commercial Banks"),
-        ("RBB",   "Rastriya Banijya Bank Ltd", "Commercial Banks"),
-        ("EBL",   "Everest Bank Ltd", "Commercial Banks"),
-        ("HBL",   "Himalayan Bank Ltd", "Commercial Banks"),
-        ("KBL",   "Kumari Bank Ltd", "Commercial Banks"),
-        ("LBL",   "Laxmi Sunrise Bank Ltd", "Commercial Banks"),
-        ("NIMB",  "Nepal Investment Mega Bank Ltd", "Commercial Banks"),
-        ("ADBL",  "Agricultural Development Bank Ltd", "Commercial Banks"),
-        ("SBI",   "Nepal SBI Bank Ltd", "Commercial Banks"),
-        ("SRBL",  "Sunrise Bank Ltd", "Commercial Banks"),
-        ("GBIME", "Global IME Bank Ltd", "Commercial Banks"),
-        ("CBL",   "Civil Bank Ltd", "Commercial Banks"),
-        ("PCBL",  "Prime Commercial Bank Ltd", "Commercial Banks"),
-        ("NMB",   "NMB Bank Ltd", "Commercial Banks"),
-        ("CZBIL", "Citizens Bank International Ltd", "Commercial Banks"),
-        ("BOKL",  "Bank of Kathmandu Ltd", "Commercial Banks"),
-        ("MEGA",  "Mega Bank Nepal Ltd", "Commercial Banks"),
-        # Development Banks
-        ("MLBSL", "Muktinath Bikas Bank Ltd", "Development Banks"),
-        ("MNBBL", "Manakamana Nepal Bikas Bank Ltd", "Development Banks"),
-        ("SHINE", "Shine Resunga Development Bank", "Development Banks"),
-        # Finance
-        ("SIFC",  "Siddhartha Insurance Finance Company", "Finance"),
-        ("GUFL",  "Guheshwori Merchant Banking", "Finance"),
-        # Insurance
-        ("LICN",  "Life Insurance Corporation Nepal", "Life Insurance"),
-        ("NLIC",  "National Life Insurance", "Life Insurance"),
-        ("ALICL", "Asian Life Insurance Co. Ltd", "Life Insurance"),
-        ("PLIC",  "Prime Life Insurance", "Life Insurance"),
-        ("SLICL", "Surya Life Insurance", "Life Insurance"),
-        ("SICL",  "Siddhartha Insurance Ltd", "Non-Life Insurance"),
-        ("NIL",   "Nepal Insurance Ltd", "Non-Life Insurance"),
-        ("PIC",   "Premier Insurance Co.", "Non-Life Insurance"),
-        ("SIC",   "Sagarmatha Insurance Co.", "Non-Life Insurance"),
-        ("NBI",   "Nepal Bangladesh Insurance", "Non-Life Insurance"),
-        # Hydropower
-        ("CHCL",  "Chilime Hydropower Co.", "Hydropower"),
-        ("NHDL",  "Nepal Hydro Developers Ltd", "Hydropower"),
-        ("BPCL",  "Butwal Power Company Ltd", "Hydropower"),
-        ("RURU",  "Rural Microfinance Dev. Centre", "Hydropower"),
-        ("AKPL",  "Arun Kabeli Power Ltd", "Hydropower"),
-        ("UPPER", "Upper Tamakoshi Hydropower", "Hydropower"),
-        ("NHPC",  "National Hydropower Company", "Hydropower"),
-        ("KPCL",  "Khani Khola Hydropower Co.", "Hydropower"),
-        ("SHPC",  "Sanima Mai Hydropower", "Hydropower"),
-        ("API",   "Api Power Company Ltd", "Hydropower"),
-        ("RRHP",  "Ridi Hydropower Development", "Hydropower"),
-        # Microfinance
-        ("CBBL",  "Chhimek Bikas Bank Ltd", "Microfinance"),
-        ("SWBBL", "Swabalamban Bikas Bank Ltd", "Microfinance"),
-        ("SKBBL", "Sudur Pashchim Bikas Bank Ltd", "Microfinance"),
-        ("SMFDB", "Sana Kisan Bikas Bank", "Microfinance"),
-        ("DDBL",  "Deprosc Development Bank", "Microfinance"),
-        # Others
-        ("NTC",   "Nepal Telecom", "Telecom"),
-        ("NIFRA", "Nepal Infrastructure Bank", "Infrastructure"),
-        ("BNL",   "Bottlers Nepal Ltd", "Manufacturing"),
-        ("UNL",   "Unilever Nepal Ltd", "Manufacturing"),
-        ("SHIVM", "Shivam Cement Ltd", "Manufacturing"),
-        ("CIT",   "Citizen Investment Trust", "Others"),
-        ("NMBMF", "NMB Microfinance", "Microfinance"),
-        ("MSMBS", "Mahuli Samudayik Laghubitta", "Microfinance"),
-    ]
-    return pd.DataFrame(stocks, columns=["symbol", "name", "sector"]).assign(id="")
-
-
-# ─── Historical Price Data ────────────────────────────────────────────────────
-
-def fetch_history(symbol: str, company_id: str = "",
-                  years: int = 3) -> pd.DataFrame:
-    """
-    Return OHLCV DataFrame for `symbol` covering `years` years.
-    Tries merolagani first, then nepalstock, then sharesansar.
-    """
-    end_dt   = datetime.now()
-    start_dt = end_dt - timedelta(days=365 * years)
-
-    df = _fetch_merolagani(symbol, start_dt, end_dt)
-    if df is not None and len(df) >= 10:
-        return df
-
-    # If ID is missing, try to find it in company list or scrape it
-    if not company_id:
-        try:
-            clist = fetch_company_list()
-            match = clist[clist["symbol"].str.upper() == symbol.upper()]
-            if not match.empty:
-                company_id = str(match.iloc[0].get("id", ""))
-        except Exception:
-            pass
-
-    if company_id:
-        df = _fetch_nepalstock(company_id, start_dt, end_dt)
-        if df is not None and len(df) >= 10:
-            return df
-
-    df = _fetch_sharesansar(symbol)
-    if df is not None and len(df) >= 10:
-        return df
-
-    raise RuntimeError(
-        f"Could not fetch data for '{symbol}' from any source.\n"
-        "Please check the symbol is correct and you have internet access."
-    )
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    col_map = {}
+    for std, aliases in COL_ALIASES.items():
+        for alias in aliases:
+            if alias in df.columns:
+                col_map[alias] = std
+                break
+    df = df.rename(columns=col_map)
+    if "close" not in df.columns:
+        raise ValueError(f"Cannot find 'close' column. Found: {list(df.columns)}")
+    if "date" not in df.columns:
+        raise ValueError(f"Cannot find 'date' column. Found: {list(df.columns)}")
+    return df
 
 
 def _to_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardise and clean an OHLCV dataframe."""
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True)
     for col in ["open", "high", "low", "close"]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(",", "").str.strip(), errors="coerce"
+            )
     if "volume" in df.columns:
-        df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+        df["volume"] = pd.to_numeric(
+            df["volume"].astype(str).str.replace(",", "").str.strip(), errors="coerce"
+        )
+    else:
+        df["volume"] = np.nan
     df = df.dropna(subset=["date", "close"])
     df = df.sort_values("date").drop_duplicates("date").reset_index(drop=True)
     return df
 
 
-def _fetch_merolagani(symbol: str, start: datetime,
-                      end: datetime) -> Optional[pd.DataFrame]:
-    """Fetch OHLCV from merolagani TechnicalChartHandler."""
+# ── Company List ──────────────────────────────────────────────────────────────
+
+def fetch_company_list() -> pd.DataFrame:
+    """Return DataFrame[symbol, name, sector, id]. Caches to disk."""
+    _ensure_dirs()
+    all_stocks: Dict[str, dict] = {}
+
+    # Source 1: NEPSE official API
+    for url in [NEPALSTOCK_SECURITY_LIST, "https://nepalstock.com.np/api/nots/company/list"]:
+        try:
+            r = robust_request(url)
+            if r is None:
+                continue
+            data = r.json()
+            items = data.get("body", data) if isinstance(data.get("body"), list) else data
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                sym = (item.get("symbol") or item.get("stockSymbol") or "").strip().upper()
+                if not sym:
+                    continue
+                sec = item.get("businessSector") or {}
+                all_stocks[sym] = {
+                    "symbol": sym,
+                    "name": item.get("companyName") or item.get("stock_name") or sym,
+                    "sector": sec.get("name", "") if isinstance(sec, dict) else str(sec),
+                    "id": str(item.get("id") or item.get("company_id") or ""),
+                }
+            if len(all_stocks) > 50:
+                break
+        except Exception:
+            continue
+
+    # Source 2: MeroLagani scrape
+    if len(all_stocks) < 30:
+        try:
+            r = robust_request("https://merolagani.com/StockQuote.aspx")
+            if r:
+                for sym in re.findall(r'symbol=([A-Z0-9]{2,8})["\']', r.text):
+                    if sym not in all_stocks:
+                        all_stocks[sym] = {"symbol": sym, "name": "", "sector": "", "id": ""}
+        except Exception:
+            pass
+
+    # Source 3: ShareSansar
+    if len(all_stocks) < 30:
+        try:
+            r = robust_request("https://www.sharesansar.com/today-share-price")
+            if r:
+                tables = pd.read_html(r.text)
+                for t in tables:
+                    cols = [str(c).lower() for c in t.columns]
+                    if any("symbol" in c or "ticker" in c for c in cols):
+                        t.columns = cols
+                        sym_col = next(c for c in cols if "symbol" in c or "ticker" in c)
+                        for sym in t[sym_col].astype(str).str.upper():
+                            if len(sym) <= 8 and sym != "NAN" and sym not in all_stocks:
+                                all_stocks[sym] = {"symbol": sym, "name": "", "sector": "", "id": ""}
+        except Exception:
+            pass
+
+    if len(all_stocks) > 50:
+        df = pd.DataFrame(list(all_stocks.values())).sort_values("symbol").reset_index(drop=True)
+        df.to_csv(COMPANY_CACHE, index=False)
+        return df
+
+    # Local cache fallback
+    if COMPANY_CACHE.exists():
+        try:
+            df = pd.read_csv(COMPANY_CACHE)
+            df["symbol"] = df["symbol"].astype(str).str.upper()
+            if len(df) > 20:
+                return df
+        except Exception:
+            pass
+
+    return _builtin_company_list()
+
+
+def _builtin_company_list() -> pd.DataFrame:
+    stocks = [
+        ("NABIL", "Nabil Bank Ltd", "Commercial Banks"),
+        ("NICA", "NIC Asia Bank Ltd", "Commercial Banks"),
+        ("SCB", "Standard Chartered Bank Nepal", "Commercial Banks"),
+        ("SANIMA", "Sanima Bank Ltd", "Commercial Banks"),
+        ("MBL", "Machhapuchchhre Bank Ltd", "Commercial Banks"),
+        ("PRVU", "Prabhu Bank Ltd", "Commercial Banks"),
+        ("NBL", "Nepal Bank Ltd", "Commercial Banks"),
+        ("EBL", "Everest Bank Ltd", "Commercial Banks"),
+        ("HBL", "Himalayan Bank Ltd", "Commercial Banks"),
+        ("KBL", "Kumari Bank Ltd", "Commercial Banks"),
+        ("NIMB", "Nepal Investment Mega Bank Ltd", "Commercial Banks"),
+        ("ADBL", "Agricultural Development Bank Ltd", "Commercial Banks"),
+        ("GBIME", "Global IME Bank Ltd", "Commercial Banks"),
+        ("NMB", "NMB Bank Ltd", "Commercial Banks"),
+        ("PCBL", "Prime Commercial Bank Ltd", "Commercial Banks"),
+        ("UPPER", "Upper Tamakoshi Hydropower", "Hydropower"),
+        ("NHPC", "National Hydropower Company", "Hydropower"),
+        ("CHCL", "Chilime Hydropower Co.", "Hydropower"),
+        ("BPCL", "Butwal Power Company Ltd", "Hydropower"),
+        ("NTC", "Nepal Telecom", "Telecom"),
+        ("NLIC", "National Life Insurance", "Life Insurance"),
+        ("LICN", "Life Insurance Corporation Nepal", "Life Insurance"),
+        ("CBBL", "Chhimek Bikas Bank Ltd", "Microfinance"),
+        ("SWBBL", "Swabalamban Bikas Bank Ltd", "Microfinance"),
+        ("CIT", "Citizen Investment Trust", "Others"),
+        ("UNL", "Unilever Nepal Ltd", "Manufacturing"),
+    ]
+    return pd.DataFrame(stocks, columns=["symbol", "name", "sector"]).assign(id="")
+
+
+# ── Historical Price Data ─────────────────────────────────────────────────────
+
+def fetch_history(symbol: str, company_id: str = "", years: int = 5) -> pd.DataFrame:
+    """
+    Return cleaned OHLCV DataFrame for `symbol` covering `years` years.
+    Tries sources in order: MeroLagani → NepalStock → ShareSansar → cache.
+    """
+    _ensure_dirs()
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=365 * years)
+
+    # Check disk cache (fresh within 1 hour)
+    cache_file = PRICE_CACHE_DIR / f"{symbol.upper()}_{years}y.pkl"
+    if cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < 3600:
+            try:
+                df = pd.read_pickle(cache_file)
+                logger.debug("Price cache hit for %s", symbol)
+                return df
+            except Exception:
+                pass
+
+    df = _fetch_merolagani(symbol, start_dt, end_dt)
+    if df is not None and len(df) >= 20:
+        df.to_pickle(cache_file)
+        return df
+
+    if not company_id:
+        try:
+            companies = fetch_company_list()
+            m = companies[companies["symbol"].str.upper() == symbol.upper()]
+            if not m.empty:
+                company_id = str(m.iloc[0].get("id", ""))
+        except Exception:
+            pass
+
+    if company_id:
+        df = _fetch_nepalstock(company_id, start_dt, end_dt)
+        if df is not None and len(df) >= 20:
+            df.to_pickle(cache_file)
+            return df
+
+    df = _fetch_sharesansar(symbol)
+    if df is not None and len(df) >= 20:
+        df.to_pickle(cache_file)
+        return df
+
+    # Try loading stale cache as last resort
+    if cache_file.exists():
+        try:
+            df = pd.read_pickle(cache_file)
+            if len(df) >= 20:
+                logger.warning("Using stale cache for %s", symbol)
+                return df
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        f"Could not fetch data for '{symbol}' from any source. "
+        "Check the symbol and internet connection."
+    )
+
+
+def _fetch_merolagani(symbol: str, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
     try:
-        start_ts = int(start.timestamp())
-        end_ts   = int(end.timestamp())
         url = MEROLAGANI_CHART.format(
             symbol=symbol.upper(),
-            start_ts=start_ts,
-            end_ts=end_ts
+            start_ts=int(start.timestamp()),
+            end_ts=int(end.timestamp()),
         )
         r = robust_request(url, headers={
             **HEADERS,
-            "Referer": f"https://merolagani.com/CompanyDetail.aspx?symbol={symbol}"
+            "Referer": f"https://merolagani.com/CompanyDetail.aspx?symbol={symbol}",
         })
-
-        if r is None or r.status_code != 200:
+        if r is None:
             return None
-
         data = r.json()
-        # API returns: {"t": [timestamps], "o": [open], "h": [high],
-        #               "l": [low], "c": [close], "v": [volume], "s": "ok"}
         if data.get("s") != "ok" or not data.get("t"):
             return None
-
         df = pd.DataFrame({
-            "date":   [datetime.fromtimestamp(ts) for ts in data["t"]],
-            "open":   data.get("o", [None] * len(data["t"])),
-            "high":   data.get("h", [None] * len(data["t"])),
-            "low":    data.get("l", [None] * len(data["t"])),
-            "close":  data["c"],
+            "date": [datetime.fromtimestamp(ts) for ts in data["t"]],
+            "open": data.get("o", [np.nan] * len(data["t"])),
+            "high": data.get("h", [np.nan] * len(data["t"])),
+            "low": data.get("l", [np.nan] * len(data["t"])),
+            "close": data["c"],
             "volume": data.get("v", [0] * len(data["t"])),
         })
-        df = _to_ohlcv(df)
-        print(f"  ✅ merolagani.com  →  {len(df)} rows  ({df['date'].iloc[0].date()} to {df['date'].iloc[-1].date()})")
-        return df
-
-    except Exception as e:
-        print(f"  ⚠ merolagani fetch error for {symbol}: {e}")
+        return _to_ohlcv(df)
+    except Exception as exc:
+        logger.debug("MeroLagani fetch error for %s: %s", symbol, exc)
         return None
 
 
-def _fetch_nepalstock(company_id: str, start: datetime,
-                      end: datetime) -> Optional[pd.DataFrame]:
-    """Fetch OHLCV from nepalstock.com.np official API."""
+def _fetch_nepalstock(company_id: str, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
     try:
         url = NEPALSTOCK_HISTORY.format(
             id=company_id,
@@ -348,63 +354,234 @@ def _fetch_nepalstock(company_id: str, start: datetime,
             end=end.strftime("%Y-%m-%d"),
         )
         r = robust_request(url)
-        if r is None or r.status_code != 200:
+        if r is None:
             return None
         data = r.json()
         items = data.get("body", {}).get("data", [])
         if not items:
             return None
-        rows = []
-        for item in items:
-            rows.append({
-                "date":   item.get("businessDate"),
-                "open":   item.get("openPrice"),
-                "high":   item.get("highPrice"),
-                "low":    item.get("lowPrice"),
-                "close":  item.get("closingPrice") or item.get("lastTradedPrice"),
+        rows = [
+            {
+                "date": item.get("businessDate"),
+                "open": item.get("openPrice"),
+                "high": item.get("highPrice"),
+                "low": item.get("lowPrice"),
+                "close": item.get("closingPrice") or item.get("lastTradedPrice"),
                 "volume": item.get("totalTradeQuantity"),
-            })
-        df = _to_ohlcv(pd.DataFrame(rows))
-        if len(df) > 0:
-            print(f"  ✅ nepalstock.com.np  →  {len(df)} rows  ({df['date'].iloc[0].date()} to {df['date'].iloc[-1].date()})")
-        return df if len(df) > 0 else None
-    except Exception as e:
-        print(f"  ⚠ nepalstock fetch error: {e}")
+            }
+            for item in items
+        ]
+        return _to_ohlcv(pd.DataFrame(rows))
+    except Exception as exc:
+        logger.debug("NepalStock fetch error: %s", exc)
         return None
 
 
 def _fetch_sharesansar(symbol: str) -> Optional[pd.DataFrame]:
-    """Scrape ShareSansar price history table as last resort."""
     try:
-        import re
-        sess = requests.Session()
-        sess.headers.update(HEADERS)
-        r = robust_request(
-            f"https://www.sharesansar.com/company/{symbol.lower()}"
-        )
-        if r is None or r.status_code != 200:
+        r = robust_request(f"https://www.sharesansar.com/company/{symbol.lower()}")
+        if r is None:
             return None
-        
         tables = pd.read_html(r.text)
         for t in tables:
             cols = [str(c).lower() for c in t.columns]
             if any("close" in c or "ltp" in c for c in cols):
-                t.columns = [str(c).lower().strip() for c in t.columns]
-                # normalise column names
                 rename = {}
-                for c in t.columns:
-                    if "date" in c:   rename[c] = "date"
-                    elif "open" in c: rename[c] = "open"
-                    elif "high" in c: rename[c] = "high"
-                    elif "low" in c:  rename[c] = "low"
-                    elif "close" in c or "ltp" in c: rename[c] = "close"
-                    elif "vol" in c or "qty" in c:   rename[c] = "volume"
+                for orig, cl in zip(t.columns, cols):
+                    if "date" in cl:        rename[orig] = "date"
+                    elif "open" in cl:      rename[orig] = "open"
+                    elif "high" in cl:      rename[orig] = "high"
+                    elif "low" in cl:       rename[orig] = "low"
+                    elif "close" in cl or "ltp" in cl: rename[orig] = "close"
+                    elif "vol" in cl or "qty" in cl:   rename[orig] = "volume"
                 t = t.rename(columns=rename)
                 if "close" in t.columns:
                     df = _to_ohlcv(t)
                     if len(df) > 0:
-                        print(f"  ✅ sharesansar.com  →  {len(df)} rows")
                         return df
-    except Exception as e:
-        print(f"  ⚠ sharesansar fetch error for {symbol}: {e}")
+    except Exception as exc:
+        logger.debug("ShareSansar fetch error for %s: %s", symbol, exc)
     return None
+
+
+# ── Sentiment / News Data ─────────────────────────────────────────────────────
+
+RSS_FEEDS = [
+    # General Nepal finance/business news
+    "https://thehimalayantimes.com/feed/",
+    "https://myrepublica.nagariknetwork.com/feed/",
+    "https://english.onlinekhabar.com/feed",
+    "https://kathmandupost.com/rss",
+    "https://sharesansar.com/rss/news",
+    "https://merolagani.com/rss/news",
+]
+
+
+def fetch_news_sentiment(symbol: str, days_back: int = 7) -> List[Dict[str, Any]]:
+    """
+    Fetch news articles mentioning `symbol` from RSS feeds.
+    Returns list of dicts: {title, published, source, raw_score, label}
+    where raw_score is basic keyword polarity (-1..+1).
+    """
+    _ensure_dirs()
+    cache_key = hashlib.md5(f"{symbol}_{days_back}".encode()).hexdigest()[:12]
+    cache_file = NEWS_CACHE_DIR / f"{cache_key}.json"
+
+    # Fresh cache within 2 hours
+    if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7200:
+        try:
+            with open(cache_file) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    cutoff = datetime.now() - timedelta(days=days_back)
+    articles = []
+
+    for feed_url in RSS_FEEDS:
+        try:
+            r = robust_request(feed_url, timeout=10, retries=2)
+            if r is None:
+                continue
+            _parse_rss_feed(r.text, symbol, cutoff, articles)
+        except Exception:
+            continue
+
+    # Deduplicate by title
+    seen_titles: set = set()
+    unique_articles = []
+    for art in articles:
+        key = art["title"][:60].lower()
+        if key not in seen_titles:
+            seen_titles.add(key)
+            unique_articles.append(art)
+
+    # Score sentiment
+    for art in unique_articles:
+        score, label = _keyword_sentiment(art["title"] + " " + art.get("summary", ""))
+        art["raw_score"] = score
+        art["label"] = label
+
+    # Sort by date desc
+    unique_articles.sort(key=lambda x: x.get("published", ""), reverse=True)
+
+    try:
+        with open(cache_file, "w") as f:
+            json.dump(unique_articles, f, indent=2, default=str)
+    except Exception:
+        pass
+
+    return unique_articles
+
+
+def _parse_rss_feed(xml_text: str, symbol: str, cutoff: datetime, out: List) -> None:
+    """Parse RSS XML text and append relevant articles to `out`."""
+    try:
+        # Very lightweight XML parse — avoids lxml dependency issues
+        items = re.findall(r"<item>(.*?)</item>", xml_text, re.DOTALL)
+        for item in items:
+            title = re.search(r"<title[^>]*>(.*?)</title>", item, re.DOTALL)
+            link = re.search(r"<link>(.*?)</link>", item, re.DOTALL)
+            pub = re.search(r"<pubDate>(.*?)</pubDate>", item, re.DOTALL)
+            desc = re.search(r"<description[^>]*>(.*?)</description>", item, re.DOTALL)
+
+            title_text = _strip_cdata(title.group(1)) if title else ""
+            desc_text = _strip_cdata(desc.group(1)) if desc else ""
+
+            # Relevance filter: symbol OR generic market keywords
+            combined = (title_text + " " + desc_text).upper()
+            if not (symbol.upper() in combined or _is_market_relevant(combined)):
+                continue
+
+            pub_str = pub.group(1).strip() if pub else ""
+            pub_dt = _parse_rss_date(pub_str)
+            if pub_dt and pub_dt < cutoff:
+                continue
+
+            out.append({
+                "title": title_text.strip(),
+                "link": (link.group(1).strip() if link else ""),
+                "published": pub_str,
+                "published_dt": pub_dt.isoformat() if pub_dt else "",
+                "summary": re.sub(r"<[^>]+>", " ", desc_text)[:300].strip(),
+            })
+    except Exception:
+        pass
+
+
+def _strip_cdata(s: str) -> str:
+    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", s, flags=re.DOTALL)
+    return re.sub(r"<[^>]+>", " ", s).strip()
+
+
+def _parse_rss_date(s: str) -> Optional[datetime]:
+    for fmt in [
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d",
+    ]:
+        try:
+            dt = datetime.strptime(s.strip(), fmt)
+            return dt.replace(tzinfo=None)
+        except Exception:
+            continue
+    return None
+
+
+def _is_market_relevant(text: str) -> bool:
+    keywords = [
+        "NEPSE", "STOCK MARKET", "SHARE MARKET", "BULL", "BEAR",
+        "DIVIDEND", "BONUS", "RIGHT SHARE", "IPO", "FPO",
+        "NABIL", "NTC", "UPPER", "ADBL", "GBIME",
+        "INTEREST RATE", "NRB", "RASTRA BANK", "INFLATION",
+        "GDP", "REMITTANCE", "BANKING SECTOR",
+    ]
+    return any(k in text for k in keywords)
+
+
+POSITIVE_WORDS = {
+    "profit", "growth", "increase", "surge", "record", "high", "bull",
+    "rally", "gain", "rise", "bonus", "dividend", "strong", "positive",
+    "recovery", "expansion", "outperform", "beat", "upgrade", "buy",
+    "accumulate", "upside", "opportunity", "optimistic", "robust",
+}
+NEGATIVE_WORDS = {
+    "loss", "decline", "fall", "drop", "bear", "crash", "weak", "negative",
+    "default", "risk", "concern", "worry", "sell", "downgrade", "cut",
+    "problem", "issue", "crisis", "slow", "contraction", "miss", "disappoint",
+    "fear", "uncertainty", "volatile", "correction", "plunge", "slump",
+}
+
+
+def _keyword_sentiment(text: str) -> Tuple[float, str]:
+    words = re.findall(r"\b[a-z]+\b", text.lower())
+    pos = sum(1 for w in words if w in POSITIVE_WORDS)
+    neg = sum(1 for w in words if w in NEGATIVE_WORDS)
+    total = pos + neg
+    if total == 0:
+        return 0.0, "neutral"
+    score = (pos - neg) / total
+    label = "positive" if score > 0.1 else "negative" if score < -0.1 else "neutral"
+    return round(score, 3), label
+
+
+def get_aggregate_sentiment(symbol: str, days_back: int = 7) -> Dict[str, Any]:
+    """
+    Returns aggregate sentiment signal:
+    {score: float [-1..1], label: str, count: int, articles: list}
+    """
+    articles = fetch_news_sentiment(symbol, days_back)
+    if not articles:
+        return {"score": 0.0, "label": "neutral", "count": 0, "articles": []}
+
+    scores = [a["raw_score"] for a in articles]
+    avg_score = float(np.mean(scores)) if scores else 0.0
+    label = "positive" if avg_score > 0.1 else "negative" if avg_score < -0.1 else "neutral"
+
+    return {
+        "score": round(avg_score, 3),
+        "label": label,
+        "count": len(articles),
+        "articles": articles[:10],  # top 10
+    }

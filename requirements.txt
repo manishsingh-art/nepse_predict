@@ -1,10 +1,31 @@
+# NEPSE ML Predictor — Requirements
+# Install: pip install -r requirements.txt
+
+# ── Core Data ─────────────────────────────────────────────────────────────────
 pandas>=2.0.0
 numpy>=1.24.0
+
+# ── ML Libraries (primary ensemble) ──────────────────────────────────────────
 scikit-learn>=1.3.0
-ta>=0.11.0
+lightgbm>=4.0.0           # Primary model — fast, handles NaN natively
+xgboost>=2.0.0            # Ensemble member
+optuna>=3.3.0             # Hyperparameter optimisation
+
+# ── Explainability (optional but recommended) ─────────────────────────────────
+# shap>=0.43.0            # Feature importance SHAP values (install separately if needed)
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib>=3.7.0
+
+# ── Terminal / Display ────────────────────────────────────────────────────────
 colorama>=0.4.6
 tabulate>=0.9.0
-matplotlib>=3.7.0
+
+# ── Data Fetching ─────────────────────────────────────────────────────────────
 requests>=2.31.0
 lxml>=4.9.0
 beautifulsoup4>=4.12.0
+
+# ── Optional: faster data access ─────────────────────────────────────────────
+# ta>=0.11.0              # Alternative TA library
+# yfinance>=0.2.0         # Yahoo Finance (if adding global market correlation)
