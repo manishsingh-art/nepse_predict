@@ -299,6 +299,27 @@ def build_features(
     rolling_max_252 = cl.rolling(min(252, len(df))).max()
     df["price_rank_52w"] = (cl - rolling_min_252) / (rolling_max_252 - rolling_min_252 + 1e-9)
 
+    # ── Market Index Features (v5.0 Upgrade) ──────────────────────────────────
+    if "nepse_ret_1d" in df.columns:
+        df["nepse_return"] = df["nepse_ret_1d"]
+    
+    # ── Smart Money Features (v5.0 Upgrade) ───────────────────────────────────
+    df["volume_spike"] = (vol > vol.rolling(20).mean() * 2).astype(float)
+    
+    # Handle delivery data safely
+    if "delivery_qty" in df.columns:
+        delivery_qty = pd.to_numeric(df["delivery_qty"], errors="coerce").fillna(0.0)
+    else:
+        delivery_qty = pd.Series(0.0, index=df.index)
+    
+    if smart_money_info and "delivery_qty" in smart_money_info:
+        delivery_qty = float(smart_money_info["delivery_qty"])
+    df["delivery_ratio"] = (delivery_qty / (vol + 1e-9)).clip(0, 1)
+
+    # ── News Decay Feature (v5.0 Upgrade) ─────────────────────────────────────
+    days_since = float(smart_money_info.get("days_since_news", 0.0) if smart_money_info else 0.0)
+    df["news_decay"] = float(sentiment_score) * np.exp(-days_since / 3)
+
     return df
 
 
@@ -431,6 +452,9 @@ BASE_FEATURES = [
     "sma_5_20_cross", "sma_10_50_cross",
     # Market (NEPSE Index)
     "nepse_ret_1d", "nepse_rsi_14", "nepse_dist_ema_20", "nepse_vol_ratio",
+    "nepse_return", "relative_strength",
+    # Additional v5.0 Upgrades
+    "volume_spike", "delivery_ratio", "news_decay",
 ]
 
 # Nepal-specific features (only added when nepal_calendar is available)
@@ -502,15 +526,21 @@ def add_market_features(df: pd.DataFrame, nepse_df: pd.DataFrame) -> pd.DataFram
     nepse_vol_sma = nepse['volume'].rolling(20).mean()
     nepse['nepse_vol_ratio'] = nepse['volume'] / (nepse_vol_sma + 1e-9)
     
+    # Relative Strength (Stock / NEPSE)
+    nepse['nepse_close_abs'] = nepse['close']
+    
     # Normalize dates for merging
     df['date_only'] = pd.to_datetime(df['date']).dt.date
     nepse['date_only'] = pd.to_datetime(nepse['date']).dt.date
     
-    # Merge only necessary columns
-    cols_to_merge = ['date_only', 'nepse_ret_1d', 'nepse_rsi_14', 'nepse_dist_ema_20', 'nepse_vol_ratio']
+    # Merge necessary columns
+    cols_to_merge = ['date_only', 'nepse_ret_1d', 'nepse_rsi_14', 'nepse_dist_ema_20', 'nepse_vol_ratio', 'nepse_close_abs']
     df = pd.merge(df, nepse[cols_to_merge], on='date_only', how='left')
     
-    return df.drop(columns=['date_only'])
+    # Calculate relative strength after merge
+    df['relative_strength'] = df['close'] / (df['nepse_close_abs'] + 1e-9)
+    
+    return df.drop(columns=['date_only', 'nepse_close_abs'])
 
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:

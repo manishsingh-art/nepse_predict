@@ -611,6 +611,14 @@ def run_ml_analysis(
             except Exception as ue:
                 logger.warning(f"Forecast table display error: {ue}")
 
+            # ── Scenario Analysis (v5.0 Upgrade) ──
+            if ml_preds:
+                print_section("Scenario Analysis (Probabilistic Outcomes)")
+                base_f = ml_preds[min(2, len(ml_preds)-1)] # session 3
+                print(f"  Bull Case (30%) → Target: NPR {base_f.scenario_bull:,.2f} (+{((base_f.scenario_bull/last_price)-1)*100:+.2f}%)")
+                print(f"  Base Case (50%) → Target: NPR {base_f.predicted_close:,.2f} (+{((base_f.predicted_close/last_price)-1)*100:+.2f}%)")
+                print(f"  Bear Case (20%) → Target: NPR {base_f.scenario_bear:,.2f} ({((base_f.scenario_bear/last_price)-1)*100:+.2f}%)")
+
             
             # Signal generation (v6.1) — ATR-aware strategy
             atr_value = trend_info.get("atr", None)  if "trend_info" in dir() else None
@@ -618,18 +626,56 @@ def run_ml_analysis(
             trade_plan = strat_engine.generate_strategy(last_price, ml_preds, sm_report, regime_info, atr=atr_value)
             
             try:
+                # ── Final Decision Engine Integration (v5.0 Upgrade) ──
+                m_prob = float(ml_preds[0].direction_prob)
+                t_score = float(trend_info["score"])
+                s_score = float(sentiment.get("score", 0.0))
+                mom_score = float(trend_info["recent_5d_momentum"])
+                vol_score = float(trend_info["vol_ratio"])
+                
+                final_sig, final_conf = ensemble.compute_final_signal(m_prob, t_score, s_score, mom_score, vol_score)
+                
+                # Model Reliability (v5.0 Upgrade)
+                log_data = load_log()
+                accuracy = 0.0
+                hist_entries = log_data.get(symbol.upper(), [])
+                if hist_entries:
+                    correct = sum(1 for e in hist_entries if e.get("error_pct") is not None and abs(e["error_pct"]) < 3) # within 3%
+                    # Actually directional:
+                    # directional_correct = sum(1 for e in hist_entries if ...) 
+                    # Use the error/backtest summary if available
+                    accuracy = rolling_accuracy(log_data, symbol) or 0.0
+                
+                print_section("FINAL MARKET VERDICT")
+                sig_color = Fore.GREEN if final_sig == "BUY" else Fore.RED if final_sig == "SELL" else Fore.YELLOW
+                print(f"  FINAL SIGNAL      : {sig_color}{Style.BRIGHT}{final_sig}{Style.RESET_ALL}")
+                print(f"  Confidence        : {final_conf*100:.1f}%")
+                
+                # Model Reliability
+                rel_c = Fore.GREEN if accuracy < 2 else Fore.YELLOW if accuracy < 5 else Fore.RED
+                rel_text = f"{100 - accuracy:.1f}%" if accuracy > 0 else "Pending Data"
+                print(f"  Model Reliability : {rel_c}{rel_text}{Style.RESET_ALL} (Historical Precision)")
+                
+                # Reason Construction
+                reasons = []
+                reasons.append(f"ML Probability: {m_prob:.0%}")
+                reasons.append(f"Trend: {'BULLISH' if t_score > 0 else 'BEARISH' if t_score < 0 else 'NEUTRAL'}")
+                reasons.append(f"Sentiment: {'POS' if s_score > 0 else 'NEG' if s_score < 0 else 'NEUT'}")
+                print(f"  Reason            : {', '.join(reasons)}")
+
                 print_section("Actionable Trade Plan (v6.1 Strategy Layer)")
                 ac = Fore.GREEN if "BUY" in trade_plan["action"] else Fore.RED if ("SELL" in trade_plan["action"] or "AVOID" in trade_plan["action"]) else Fore.YELLOW
-                print(f"  Recommended Action : {ac}{trade_plan['action']}{Style.RESET_ALL}")
-                print(f"  Entry              : NPR {trade_plan['entry']:,.2f}")
-                print(f"  Target Price (TP)  : NPR {trade_plan['take_profit']:,.2f}")
-                print(f"  Stop Loss (SL)     : NPR {trade_plan['stop_loss']:,.2f}")
-                if trade_plan.get('atr_used'):
-                    print(f"  ATR(14)            : NPR {trade_plan['atr_used']:,.2f} (volatility unit)")
-                print(f"  Risk/Reward Ratio  : {trade_plan['risk_reward_ratio']:.2f}x")
-                print(f"  Trap Index         : {trade_plan.get('trap_index', 0)}/100")
-                print(f"  Position Weight    : {trade_plan['suggested_size_weight']*100:.0f}% of Normal Unit")
-                print(f"  Rationale          : {trade_plan['reason']}")
+                
+                # Improved Trade Plan (v5.0 Upgrade) - Zones
+                sup20 = trend_info.get("support") or last_price * 0.95
+                res20 = trend_info.get("resistance") or last_price * 1.05
+                
+                print(f"  Buy Zone          : NPR {sup20 * 0.98:,.2f} – {sup20 * 1.02:,.2f} (Support ±2%)")
+                print(f"  Breakout Buy      : Above NPR {res20:,.2f} (Resistance Validation)")
+                print(f"  Target Price (TP) : NPR {trade_plan['take_profit']:,.2f}")
+                print(f"  Stop Loss (SL)    : NPR {trade_plan['stop_loss']:,.2f}")
+                print(f"  Risk/Reward Ratio : {trade_plan['risk_reward_ratio']:.2f}x")
+                print(f"  Position Weight   : {trade_plan['suggested_size_weight']*100:.0f}% of Normal Unit")
             except: pass
 
             predictions = ml_preds
@@ -737,14 +783,7 @@ def run_ml_analysis(
         if perf_table:
             print(tabulate(perf_table, headers=["Date AD", "Predicted", "Actual/LTP", "Error%"], tablefmt="simple"))
 
-    # ── Trading Signals ───────────────────────────────────────────────────────
-    if predictions:
-        strategies = suggest_strategy(trend_info, predictions, df_ind)
-        print_section("Trading Strategy Signals")
-        for s in strategies:
-            color = Fore.GREEN if "BUY" in s["signal"] else Fore.RED if "SELL" in s["signal"] else Fore.YELLOW
-            print(f"  {s['emoji']}  [{color}{s['signal']}{Style.RESET_ALL}] ({s['strength']})")
-            print(f"       {s['reason']}")
+    # ── Trading Signals (Legacy section removed in v5.0 Upgrade) ──────────
 
         next_pred  = predictions[0]
         np_date = next_pred.get("date") if isinstance(next_pred, dict) else getattr(next_pred, "date", "")

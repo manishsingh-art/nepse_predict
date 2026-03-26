@@ -559,8 +559,44 @@ class NEPSEEnsemble:
                 else:
                     dir_prob = float(dc.predict_proba(X_raw)[0][1])
             except: pass
-
+        
         return final_pred, dir_prob
+
+    def compute_final_signal(
+        self, 
+        model_prob: float, 
+        trend_score: float, 
+        sentiment_score: float, 
+        momentum_score: float, 
+        volume_score: float
+    ) -> Tuple[str, float]:
+        """
+        Unified Decision Engine (v5.0 Upgrade).
+        Returns (SIGNAL, confidence_score).
+        """
+        # Normalize trend_score from [-6, +6] to [0, 1]
+        t_normalized = (trend_score + 6) / 12.0
+        # Normalize sentiment from [-1, +1] to [0, 1]
+        s_normalized = (sentiment_score + 1) / 2.0
+        # Normalize momentum (approximate) - assume -5% to +5% range
+        m_normalized = np.clip((momentum_score + 5) / 10.0, 0, 1)
+        # Normalize volume ratio (1.0 is neutral)
+        v_normalized = np.clip(volume_score / 2.0, 0, 1)
+
+        score = (
+            0.35 * model_prob +
+            0.25 * t_normalized +
+            0.15 * s_normalized +
+            0.15 * m_normalized +
+            0.10 * v_normalized
+        )
+
+        if score > 0.6:
+            return "BUY", score
+        elif score < 0.4:
+            return "SELL", score
+        else:
+            return "HOLD", score
 
     def forecast(
         self,
@@ -604,8 +640,12 @@ class NEPSEEnsemble:
 
             raw_pred, dir_prob = self.predict_one(X_pred, curr_reg_info["regime"])
             
+            # ── Fix Forecast Logic (v5.0 Upgrade) ──
+            # Price adjustment based on probability to avoid counter-intuitive moves
+            adjusted_base = raw_pred * (1 + (dir_prob - 0.5))
+            
             feats_dict = last_row.to_dict(orient="records")[0]
-            constrained_pred = _apply_realism_constraints(raw_pred, prev_price, feats_dict, df_work)
+            constrained_pred = _apply_realism_constraints(adjusted_base, prev_price, feats_dict, df_work)
             capped_pred = _clip_circuit(constrained_pred, prev_price)
 
             # Volatility range based on actual regime volatility
