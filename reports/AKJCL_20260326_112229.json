@@ -1,0 +1,131 @@
+{
+  "symbol": "AKJCL",
+  "generated_at": "2026-03-26T11:22:29",
+  "last_close": 404.2,
+  "last_date": "2026-03-26",
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 4,
+    "price_change_pct_20d": 18.15,
+    "volatility_pct": 4.62,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "rsi": 65.0,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "False",
+    "bb_position_pct": 71.4,
+    "recent_5d_momentum": -1.11,
+    "last_close": 404.2,
+    "last_date": "2026-03-26 22:51:01",
+    "support": 335.0,
+    "resistance": 431.8,
+    "cci": 54.2,
+    "williams_r": -38.4,
+    "stoch_k": 61.6,
+    "stoch_d": 67.9,
+    "obv_trend": "Falling",
+    "vol_ratio": 0.04
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-29",
+      "day_name": "Sunday",
+      "predicted_close": 363.78,
+      "low_band": 347.12,
+      "high_band": 380.44,
+      "change_pct": -10.0,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-27"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "day_name": "Monday",
+      "predicted_close": 355.6,
+      "low_band": 339.32,
+      "high_band": 371.89,
+      "change_pct": -2.25,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-28"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "day_name": "Tuesday",
+      "predicted_close": 357.69,
+      "low_band": 341.31,
+      "high_band": 374.07,
+      "change_pct": 0.59,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-29"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-02",
+      "day_name": "Thursday",
+      "predicted_close": 359.79,
+      "low_band": 343.31,
+      "high_band": 376.26,
+      "change_pct": 0.59,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-02"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-05",
+      "day_name": "Sunday",
+      "predicted_close": 361.89,
+      "low_band": 345.32,
+      "high_band": 378.47,
+      "change_pct": 0.58,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-05"
+    },
+    {
+      "day": 6,
+      "date": "2026-04-06",
+      "day_name": "Monday",
+      "predicted_close": 364.01,
+      "low_band": 347.34,
+      "high_band": 380.68,
+      "change_pct": 0.59,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-06"
+    },
+    {
+      "day": 7,
+      "date": "2026-04-07",
+      "day_name": "Tuesday",
+      "predicted_close": 366.14,
+      "low_band": 349.37,
+      "high_band": 382.9,
+      "change_pct": 0.58,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-07"
+    }
+  ],
+  "ml_metrics": {
+    "avg_mae": 29.49,
+    "avg_dir_acc": 54.78,
+    "avg_mape": 10.006,
+    "models_used": [
+      "lgb",
+      "xgb",
+      "gbm",
+      "rf",
+      "ridge"
+    ]
+  }
+}

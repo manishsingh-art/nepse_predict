@@ -1,0 +1,97 @@
+{
+  "symbol": "AKJCL",
+  "generated_at": "2026-03-26T11:40:32",
+  "last_close": 402.1,
+  "last_date": "2026-03-26",
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 4,
+    "price_change_pct_20d": 7.8,
+    "volatility_pct": 4.69,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "rsi": 66.8,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "False",
+    "bb_position_pct": 71.3,
+    "recent_5d_momentum": -2.86,
+    "last_close": 402.1,
+    "last_date": "2026-03-26 02:29:58",
+    "support": 335.0,
+    "resistance": 431.8,
+    "cci": 67.0,
+    "williams_r": -34.2,
+    "stoch_k": 65.8,
+    "stoch_d": 75.8,
+    "obv_trend": "Falling",
+    "vol_ratio": 0.67
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-29",
+      "predicted_close": 442.31,
+      "low_band": 413.23,
+      "high_band": 471.39,
+      "change_pct": 10.0,
+      "direction_prob": 0.183,
+      "confidence": "high"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "predicted_close": 486.54,
+      "low_band": 452.0,
+      "high_band": 521.08,
+      "change_pct": 10.0,
+      "direction_prob": 0.038,
+      "confidence": "high"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "predicted_close": 535.2,
+      "low_band": 495.0,
+      "high_band": 575.39,
+      "change_pct": 10.0,
+      "direction_prob": 0.505,
+      "confidence": "low"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-02",
+      "predicted_close": 588.71,
+      "low_band": 542.58,
+      "high_band": 634.85,
+      "change_pct": 10.0,
+      "direction_prob": 0.243,
+      "confidence": "high"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-05",
+      "predicted_close": 647.59,
+      "low_band": 595.18,
+      "high_band": 699.99,
+      "change_pct": 10.0,
+      "direction_prob": 0.243,
+      "confidence": "high"
+    }
+  ],
+  "ml_metrics": {
+    "avg_mae": 263096.586,
+    "avg_dir_acc": 41.97,
+    "avg_mape": 82938.421,
+    "models_used": [
+      "lgb",
+      "xgb",
+      "gbm",
+      "rf",
+      "ridge"
+    ]
+  }
+}

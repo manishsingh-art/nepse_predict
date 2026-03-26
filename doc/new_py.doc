@@ -1,0 +1,36 @@
+NEPSE Predict - Project Documentation
+
+Overview:
+- Python-based Nepal Stock Exchange (NEPSE) price prediction system
+- Uses historical CSV data in `data/` and generates forecasts in `outputs/`
+- Core predictor script: `nepse_system.py`
+- Full pipeline: `run_all.py`
+
+Key Scripts:
+- `nepse_system.py`: main entrypoint for symbol prediction; accepts `--symbol` and flags `--no-ollama` (offline mode)
+- `fetcher.py`: to obtain historical price data; uses requests/lxml/BeautifulSoup
+- `features.py`: feature engineering (technical indicators, lags)
+- `models.py`: model training (lightgbm/xgboost/sklearn ensemble)
+- `analyze.py`: evaluation metrics and backtests
+- `generate_sample.py`: sample data generation
+- `nepse_live.py`: live price input for near-real-time prediction
+
+Dependencies:
+- `requirements.txt` (includes `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `xgboost`, `optuna`, etc.)
+
+Usage example:
+1. Activate venv:
+   `.\.venv\Scripts\activate.ps1`
+2. Install deps:
+   `python -m pip install -r requirements.txt`
+3. Run prediction:
+   `python nepse_system.py --symbol SHL --no-ollama`
+
+Output:
+- Forecast chart PNG in `outputs/`
+- Report TXT in `outputs/`
+- JSON result in `outputs/`
+
+Troubleshooting:
+- `ModuleNotFoundError: No module named 'numpy'`: install requirements in the active venv
+- Ensure `data/<SYMBOL>.csv` exists before running

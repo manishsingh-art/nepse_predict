@@ -1,0 +1,83 @@
+{
+  "symbol": "SONA",
+  "generated_at": "2026-03-25T17:43:13",
+  "dataset_csv": "D:\\new_py\\nepse_predict\\data\\SONA.csv",
+  "plot_path": "D:\\new_py\\nepse_predict\\outputs\\SONA_20260325_174313.png",
+  "trend": {
+    "label": "neutral",
+    "reason": "20d=+15.26%, pred5d=-4.11%"
+  },
+  "recommendation": {
+    "label": "sell",
+    "reason": "Predicted -4.11% over ~5 sessions; downside risk dominates."
+  },
+  "metrics": {
+    "linear_regression": {
+      "mae": 7.432029227834333,
+      "rmse": 17.450110232327123,
+      "n_train": 435,
+      "n_valid": 108
+    },
+    "random_forest": {
+      "mae": 8.971143883119812,
+      "rmse": 10.534430393699878,
+      "n_train": 435,
+      "n_valid": 108
+    }
+  },
+  "forecast": [
+    {
+      "date": "2026-03-27",
+      "predicted_close_lr": 465.14,
+      "predicted_close_rf": 478.73,
+      "predicted_close_blend": 473.97,
+      "expected_change_pct_from_last": -1.67
+    },
+    {
+      "date": "2026-03-30",
+      "predicted_close_lr": 463.15,
+      "predicted_close_rf": 473.0,
+      "predicted_close_blend": 469.55,
+      "expected_change_pct_from_last": -0.93
+    },
+    {
+      "date": "2026-03-31",
+      "predicted_close_lr": 461.28,
+      "predicted_close_rf": 470.09,
+      "predicted_close_blend": 467.01,
+      "expected_change_pct_from_last": -0.54
+    },
+    {
+      "date": "2026-04-01",
+      "predicted_close_lr": 459.7,
+      "predicted_close_rf": 465.83,
+      "predicted_close_blend": 463.69,
+      "expected_change_pct_from_last": -0.71
+    },
+    {
+      "date": "2026-04-02",
+      "predicted_close_lr": 455.93,
+      "predicted_close_rf": 465.56,
+      "predicted_close_blend": 462.19,
+      "expected_change_pct_from_last": -0.32
+    },
+    {
+      "date": "2026-04-03",
+      "predicted_close_lr": 454.76,
+      "predicted_close_rf": 459.88,
+      "predicted_close_blend": 458.08,
+      "expected_change_pct_from_last": -0.89
+    },
+    {
+      "date": "2026-04-06",
+      "predicted_close_lr": 454.57,
+      "predicted_close_rf": 458.59,
+      "predicted_close_blend": 457.18,
+      "expected_change_pct_from_last": -0.2
+    }
+  ],
+  "comparison": null,
+  "ollama": {
+    "model_output": null
+  }
+}

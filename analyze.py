@@ -24,6 +24,12 @@ from datetime import datetime
 from colorama import Fore, Style, init
 from tabulate import tabulate
 
+try:
+    from nepal_calendar import NepalMarketCalendar, ad_to_bs, get_bs_month_name
+    _CAL = NepalMarketCalendar(fetch_live=False)
+except ImportError:
+    _CAL = None
+
 init(autoreset=True)
 
 COL_ALIASES = {
@@ -215,6 +221,7 @@ def detect_trend(df: pd.DataFrame) -> dict:
         "price_change_pct_20d": round(price_change_pct, 2),
         "volatility_pct": round(volatility_pct, 2),
         "volatility_label": vol_label,
+        "atr": round(atr, 3),
         "rsi": round(rsi_val, 1),
         "rsi_label": rsi_label,
         "macd_bullish": macd_bull,
@@ -233,7 +240,12 @@ def detect_trend(df: pd.DataFrame) -> dict:
     }
 
 
-def detect_anomalies(df: pd.DataFrame) -> list:
+def detect_anomalies(df: pd.DataFrame, news_list: list = None) -> list:
+    """
+    Detects return outliers and (optionally) correlates them to nearby news.
+    `news_list` may contain items from `fetcher.fetch_news_sentiment()`:
+      {title, published_dt, published, link, raw_score, label, category?}
+    """
     anomalies = []
     if len(df) < 5:
         return anomalies
@@ -241,18 +253,56 @@ def detect_anomalies(df: pd.DataFrame) -> list:
     df["daily_ret"] = df["close"].pct_change()
     mean_ret = df["daily_ret"].mean()
     std_ret  = df["daily_ret"].std()
+
+    # Normalize news into (published_dt, title, source/category)
+    norm_news = []
+    if news_list:
+        for n in news_list:
+            try:
+                title = n.get("title") or n.get("headline") or ""
+                if not title:
+                    continue
+                dt_raw = n.get("published_dt") or n.get("published") or n.get("date") or ""
+                dt = pd.to_datetime(dt_raw, errors="coerce")
+                if pd.isna(dt):
+                    continue
+                norm_news.append({
+                    "dt": dt.to_pydatetime(),
+                    "title": str(title).strip(),
+                    "category": n.get("category") or "",
+                    "source": n.get("source") or "",
+                })
+            except Exception:
+                continue
+        norm_news.sort(key=lambda x: x["dt"])
+    
     for i, row in df.iterrows():
         ret = row["daily_ret"]
         if pd.isna(ret):
             continue
         z = (ret - mean_ret) / (std_ret + 1e-9)
         if abs(z) > 2.5:
+            # Correlate with news
+            cause = None
+            if norm_news:
+                try:
+                    a_dt = row["date"].to_pydatetime() if hasattr(row["date"], "to_pydatetime") else pd.to_datetime(row["date"]).to_pydatetime()
+                    window_days = 3
+                    candidates = [n for n in norm_news if n["dt"] <= a_dt and (a_dt - n["dt"]).days <= window_days]
+                    if candidates:
+                        best = candidates[-1]  # most recent before anomaly
+                        tag = best["category"] or best["source"] or "News"
+                        cause = f"{tag}: {best['title'][:70]}{'…' if len(best['title']) > 70 else ''}"
+                except Exception:
+                    cause = None
+            
             anomalies.append({
-                "date": row["date"].strftime("%Y-%m-%d"),
+                "date": row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"]),
                 "close": row["close"],
                 "change_pct": round(ret * 100, 2),
                 "z_score": round(z, 2),
                 "label": "🔺 SPIKE" if ret > 0 else "🔻 CRASH",
+                "cause": cause
             })
     return anomalies[-10:]
 
@@ -266,6 +316,7 @@ def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
     2. Holt exponential smoothing (40%)
     3. Momentum carry-forward (20%)
     NEPSE ±10% circuit-breaker enforced per step.
+    NEPSE Friday/Saturday closure enforced.
     """
     close = df["close"].dropna().values
     if len(close) < 10:
@@ -296,8 +347,19 @@ def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
     last_date    = df["date"].iloc[-1]
     current_price = close[-1]
 
+    # Use Nepal calendar for dates if available
+    future_dates = []
+    if _CAL:
+        future_dates = _CAL.next_n_trading_dates(last_date.date() if hasattr(last_date, "date") else last_date, n)
+    else:
+        # Fallback to business days if no calendar
+        d = last_date
+        for _ in range(n):
+            d += pd.offsets.BDay(1)
+            future_dates.append(d)
+
     for i in range(n):
-        pred_date = last_date + pd.offsets.BDay(i + 1)
+        pred_date = future_dates[i]
         blended   = 0.40 * lr_preds[i] + 0.40 * es_preds[i] + 0.20 * mom_preds[i]
 
         # Circuit breaker
@@ -306,16 +368,28 @@ def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
         prev_p  = predictions[-1]["predicted_close"] if predictions else close[-1]
         daily_change = (blended - prev_p) / (prev_p + 1e-9) * 100
 
-        predictions.append({
+        res = {
             "day":             i + 1,
             "date":            pred_date.strftime("%Y-%m-%d"),
+            "day_name":        pred_date.strftime("%A"),
             "predicted_close": round(blended, 2),
             "low_band":        round(blended - band, 2),
             "high_band":       round(blended + band, 2),
             "change_pct":      round(daily_change, 2),
-            "direction_prob":  0.5,  # no classifier in standalone mode
+            "direction_prob":  0.5,
             "confidence":      "medium",
-        })
+        }
+        
+        # Add Nepali Date
+        if _CAL:
+            try:
+                ad = pred_date.date() if hasattr(pred_date, "date") else pred_date
+                bs = ad_to_bs(ad)
+                res["bs_date"] = f"{bs[0]}-{bs[1]:02d}-{bs[2]:02d}"
+            except Exception:
+                pass
+                
+        predictions.append(res)
         current_price = blended
 
     return predictions
@@ -333,7 +407,12 @@ def suggest_strategy(trend_info: dict, predictions: list, df: pd.DataFrame) -> l
     cci        = trend_info.get("cci", 0)
     williams_r = trend_info.get("williams_r", -50)
     stoch_k    = trend_info.get("stoch_k", 50)
-    pred_5     = predictions[min(4, len(predictions)-1)]["predicted_close"] if predictions else last
+    
+    pred_5 = last
+    if predictions:
+        p_obj = predictions[min(4, len(predictions)-1)]
+        pred_5 = p_obj.get("predicted_close", last) if isinstance(p_obj, dict) else getattr(p_obj, "predicted_close", last)
+        
     expected_gain = (pred_5 - last) / (last + 1e-9) * 100
 
     signals = []
@@ -397,10 +476,16 @@ def suggest_strategy(trend_info: dict, predictions: list, df: pd.DataFrame) -> l
 
 def print_header(title: str):
     w = 72
-    print(); print(Fore.CYAN + "═" * w); print(Fore.CYAN + f"  {title}"); print(Fore.CYAN + "═" * w)
+    try:
+        print(); print(Fore.CYAN + "═" * w); print(Fore.CYAN + f"  {title}"); print(Fore.CYAN + "═" * w)
+    except UnicodeEncodeError:
+        print(); print("=" * w); print(f"  {title}"); print("=" * w)
 
 def print_section(title: str):
-    print(); print(Fore.YELLOW + f"▶ {title}"); print(Fore.YELLOW + "─" * 60)
+    try:
+        print(); print(Fore.YELLOW + f"▶ {title}"); print(Fore.YELLOW + "─" * 60)
+    except UnicodeEncodeError:
+        print(); print(f"> {title}"); print("-" * 60)
 
 
 def run_analysis(df: pd.DataFrame, symbol: str, n_predict: int):
@@ -451,14 +536,16 @@ def run_analysis(df: pd.DataFrame, symbol: str, n_predict: int):
     print_section(f"Price Prediction — Next {n_predict} Trading Days")
     try:
         predictions = predict_prices(df, n_predict)
-        pred_table = [
-            [p["day"], p["date"], f"NPR {p['predicted_close']:,.2f}", f"NPR {p['low_band']:,.2f}",
-             f"NPR {p['high_band']:,.2f}", f"{p['change_pct']:+.2f}%"]
-            for p in predictions
-        ]
-        print(tabulate(pred_table,
-                       headers=["Day", "Date", "Predicted", "Low Band", "High Band", "Δ%"],
-                       tablefmt="rounded_outline"))
+        headers = ["Day", "Date AD", "Date BS", "Day", "Predicted", "Δ%"]
+        pred_table = []
+        for p in predictions:
+            row = [
+                p["day"], p["date"], p.get("bs_date", "-"), p.get("day_name", "")[:3],
+                f"NPR {p['predicted_close']:,.2f}", f"{p['change_pct']:+.2f}%"
+            ]
+            pred_table.append(row)
+            
+        print(tabulate(pred_table, headers=headers, tablefmt="rounded_outline"))
     except ValueError as e:
         print(f"  {Fore.RED}Prediction skipped: {e}")
         predictions = []

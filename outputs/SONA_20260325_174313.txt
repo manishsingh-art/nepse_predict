@@ -1,0 +1,22 @@
+NEPSE Prediction Report — SONA
+Generated: 2026-03-25T17:43:13
+Dataset : D:\new_py\nepse_predict\data\SONA.csv
+Plot    : D:\new_py\nepse_predict\outputs\SONA_20260325_174313.png
+
+Trend: NEUTRAL (20d=+15.26%, pred5d=-4.11%)
+Recommendation: SELL — Predicted -4.11% over ~5 sessions; downside risk dominates.
+
+Model validation (time-based holdout):
+- Linear Regression: MAE=7.432, RMSE=17.450 (train=435, valid=108)
+- Random Forest    : MAE=8.971, RMSE=10.534 (train=435, valid=108)
+
+Forecast next 7 business days (NPR):
+- 2026-03-27: blend=473.97 (lr=465.14, rf=478.73), Δ%=-1.67%
+- 2026-03-30: blend=469.55 (lr=463.15, rf=473.00), Δ%=-0.93%
+- 2026-03-31: blend=467.01 (lr=461.28, rf=470.09), Δ%=-0.54%
+- 2026-04-01: blend=463.69 (lr=459.70, rf=465.83), Δ%=-0.71%
+- 2026-04-02: blend=462.19 (lr=455.93, rf=465.56), Δ%=-0.32%
+- 2026-04-03: blend=458.08 (lr=454.76, rf=459.88), Δ%=-0.89%
+- 2026-04-06: blend=457.18 (lr=454.57, rf=458.59), Δ%=-0.20%
+
+Ollama analysis: (not available — ollama not running or request failed)

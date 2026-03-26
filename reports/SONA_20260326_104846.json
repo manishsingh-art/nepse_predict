@@ -1,0 +1,86 @@
+{
+  "symbol": "SONA",
+  "generated_at": "2026-03-26T10:48:46",
+  "last_close": 482.0,
+  "last_date": "2026-03-26",
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 4,
+    "price_change_pct_20d": 14.33,
+    "volatility_pct": 3.72,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "rsi": 70.5,
+    "rsi_label": "OVERBOUGHT \u26a0\ufe0f",
+    "macd_bullish": "True",
+    "bb_position_pct": 77.5,
+    "recent_5d_momentum": 1.85,
+    "last_close": 482.0,
+    "last_date": "2026-03-26 02:29:59",
+    "support": 414.0,
+    "resistance": 510.0,
+    "cci": 87.8,
+    "williams_r": -30.5,
+    "stoch_k": 69.5,
+    "stoch_d": 83.9,
+    "obv_trend": "Rising",
+    "vol_ratio": 1.63
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-27",
+      "predicted_close": 465.95,
+      "low_band": 449.91,
+      "high_band": 481.98,
+      "change_pct": -3.33,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "predicted_close": 468.27,
+      "low_band": 452.16,
+      "high_band": 484.38,
+      "change_pct": 0.5,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "predicted_close": 470.6,
+      "low_band": 454.41,
+      "high_band": 486.8,
+      "change_pct": 0.5,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-01",
+      "predicted_close": 472.94,
+      "low_band": 456.67,
+      "high_band": 489.21,
+      "change_pct": 0.5,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-02",
+      "predicted_close": 475.29,
+      "low_band": 458.93,
+      "high_band": 491.64,
+      "change_pct": 0.5,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    }
+  ],
+  "ml_metrics": null
+}

@@ -1,0 +1,86 @@
+{
+  "symbol": "AKJCL",
+  "generated_at": "2026-03-26T10:54:01",
+  "last_close": 402.1,
+  "last_date": "2026-03-26",
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 4,
+    "price_change_pct_20d": 7.8,
+    "volatility_pct": 4.69,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "rsi": 66.8,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "False",
+    "bb_position_pct": 71.3,
+    "recent_5d_momentum": -2.86,
+    "last_close": 402.1,
+    "last_date": "2026-03-26 02:29:58",
+    "support": 335.0,
+    "resistance": 431.8,
+    "cci": 67.0,
+    "williams_r": -34.2,
+    "stoch_k": 65.8,
+    "stoch_d": 75.8,
+    "obv_trend": "Falling",
+    "vol_ratio": 0.67
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-27",
+      "predicted_close": 362.99,
+      "low_band": 342.94,
+      "high_band": 383.05,
+      "change_pct": -9.73,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "predicted_close": 365.02,
+      "low_band": 344.86,
+      "high_band": 385.19,
+      "change_pct": 0.56,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "predicted_close": 367.05,
+      "low_band": 346.77,
+      "high_band": 387.33,
+      "change_pct": 0.56,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-01",
+      "predicted_close": 369.08,
+      "low_band": 348.69,
+      "high_band": 389.47,
+      "change_pct": 0.55,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-02",
+      "predicted_close": 371.12,
+      "low_band": 350.62,
+      "high_band": 391.62,
+      "change_pct": 0.55,
+      "direction_prob": 0.5,
+      "confidence": "medium"
+    }
+  ],
+  "ml_metrics": null
+}

@@ -1,74 +1,104 @@
-## NEPSE prediction system (Python)
+# NEPSE Predictor v6.1 (Quantum Advanced Analytics) 🚀
 
-This project builds a **daily NEPSE (Nepal Stock Exchange) prediction pipeline**:
-- Fetches **live + historical** OHLCV data (via `merolagani` / `nepalstock` / `sharesansar` fallbacks)
-- Maintains a **growing per-symbol CSV dataset** in `data/`
-- Cleans/dedupes and generates features (moving averages, returns, volume trends, volatility)
-- Trains **Linear Regression** (baseline) + **Random Forest** (better)
-- Forecasts next **5–10 business days**
-- Optionally calls **local Ollama** (mistral recommended) to explain trend + signals + risks
-- Saves outputs into `outputs/` (report `.txt` + `.json` + forecast plot `.png`)
+An elite, regime-adaptive intelligence engine for the Nepal Stock Exchange (NEPSE). Built for low-liquidity, sentiment-driven markets — v6.1 extends v6.0's profit-optimized core with advanced volatility modeling, ATR-based risk management, and NLP-driven sentiment analysis.
 
-### Setup
+## 🌟 Key Features
 
+### v6.0 — Core Intelligence
+-   **Smart Money Intelligence**: Real-time floorsheet scraping with **Broker HHI (Concentration Index)**, hidden accumulation detection, and **Manipulation Trap Scores** (0–100).
+-   **Regime-Aware Meta-Learning**: Classifies 4 market phases (`BULL`, `BEAR`, `SIDEWAYS`, `MANIPULATION`) with regime-specific model "heads".
+-   **Behavioral Feature Engineering**: FOMO Index and Panic Index to capture retail sentiment extremes.
+-   **Realism Engine v2**: Exponential Growth Penalty + Support/Resistance gravity for realistic forecasts.
+-   **Sharpe-Optimized Ensemble**: Hyperparameter tuning (Optuna) prioritizes Sharpe Ratio over raw MAE.
+
+### v6.1 — Advanced Analytics
+-   **GARCH Volatility Clustering** (`garch_vol`, `vol_of_vol`): Detects volatility regime changes before they hit price.
+-   **Price-Volume Divergence** (`pv_divergence_score`): Flags exhaustion moves where volume doesn't confirm price.
+-   **ATR-Based Risk Management**: Stop-loss = 1.5× ATR, Take-Profit = 2.5× ATR — fully dynamic per market conditions.
+-   **Volatility-Adjusted Position Sizing**: Auto-scales trade size based on predicted risk and directional confidence.
+-   **NLP Sentiment via Ollama**: `analyze_sentiment_headlines()` uses Llama3 to score news sentiment (-1.0 to +1.0) with structured JSON output.
+
+---
+
+## 🛠 Setup & Installation
+
+### 1. Requirements
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+.venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-### Run (one symbol)
-
+### 2. (Optional) AI / NLP Setup
 ```bash
-python nepse_system.py --symbol NABIL --years 5 --horizon 7
+# Install Ollama and pull Llama3 for NLP sentiment & AI analyst
+ollama pull llama3
 ```
 
-If you don’t have Ollama running (or you want to skip it):
+---
 
+## 🚀 How to Run
+
+### Standard (ML Ensemble)
 ```bash
-python nepse_system.py --symbol NABIL --no-ollama
+python nepse_live.py --symbol NABIL --predict 7
 ```
 
-### Ollama integration
-
-1. Install Ollama and pull a model:
-
+### AI Enhanced (With Ollama — NLP Sentiment + Analyst Summary)
 ```bash
-ollama pull mistral
+python nepse_live.py --symbol NABIL --ollama --ollama-model llama3
 ```
 
-2. Run the daily script (it will call `http://localhost:11434/api/generate`):
-
+### Fast Analysis (1-year data, quick turnaround)
 ```bash
-python nepse_system.py --symbol NABIL --ollama-model mistral
+python nepse_live.py --symbol SNLI --fast
 ```
 
-### Output locations
+---
 
-- **Dataset (growing)**: `data/<SYMBOL>.csv`
-- **Reports**: `outputs/<SYMBOL>_<timestamp>.txt` and `.json`
-- **Plot**: `outputs/<SYMBOL>_<timestamp>.png`
+## 🧩 EnhancedModel (v2.1) — Modular “Feature Plugins” + Decision Engine
 
-### Daily automation (cron)
+If you want to experiment with **leading indicators**, **smart-money context**, **index dependency**, and **news/sector sentiment** *without editing the core ensemble*, use `EnhancedModel`.
 
-Run every day at 6:15 PM (example):
+- **What it is**: a small registry that lets you add/compute extra signals from any dict-like context.
+- **What it’s not**: it does not replace the ML ensemble in `models.py`; it’s meant to *compose* with your existing pipeline.
 
-```bash
-crontab -e
-```
-
-Add (update paths for your machine):
+### Run the demo
 
 ```bash
-15 18 * * * cd /Users/manishkumarsingh/py/nepse_predict && /Users/manishkumarsingh/py/nepse_predict/.venv/bin/python nepse_system.py --symbol NABIL --years 5 --horizon 7 >> outputs/cron.log 2>&1
+python enhanced_model_demo.py
 ```
 
-### Notes / realism
+### Typical integration point
 
-- Models are trained with a **time-based holdout** (no random shuffling).
-- Forecast is **recursive** (each predicted day feeds the next day’s features).
-- A **±10% daily circuit filter** is applied as a guardrail.
-- Nepal public holidays are not encoded; business days are approximated as **Mon–Fri**.
+Use it after you’ve already computed your normal pipeline outputs (OHLCV features, floorsheet smart money, NEPSE index features, sentiment score). Package those into a `context` dict and call:
 
-# nepse_predict
-# nepse_predict
+- `EnhancedModel.compute_features(context)`
+- `EnhancedModel.calculate_confidence(...)`
+- `EnhancedModel.decision_engine(...)`
+
+## ✅ Verification (v6.1/v6.2)
+
+End-to-end verification was run in **Fast mode** (no Ollama required):
+
+- **Command**: `python nepse_live.py --symbol SNLI --fast`
+- **Status**: Exit 0, ML training succeeded (LightGBM may be skipped automatically if unsupported on your local build)
+- **Example metrics (SNLI, 1y, 2026-03-26)**:
+  - **Avg directional accuracy**: ~56.0%
+  - **Avg MAE**: ~27,942.12 (note: fold metrics can vary by data/source)
+  - **Forecast horizon**: 7 Nepal trading sessions
+
+---
+
+## 📊 Output Explained
+
+-   **Terminal**: Regime Phase, Trap Index, Broker HHI, ATR-based SL/TP, and volatility-adjusted position weight.
+-   **Reports (`/reports`)**: JSON with full v6.1 metrics — probabilistic bands, divergence scores, and anomalies.
+-   **Logs (`predictions_log-DATE.json`)**: Rolling prediction accuracy tracking.
+
+---
+
+## ⚠️ Disclaimer
+For **educational and research purposes only**. Stock market predictions are probabilistic and carry inherent risk. Always use stop-losses. This is not financial advice.
+
+**Directional Accuracy Target**: 70–75% (v6.1 Quantum Advanced Analytics Engine).

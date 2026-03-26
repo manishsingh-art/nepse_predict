@@ -1,0 +1,166 @@
+{
+  "symbol": "NABIL",
+  "version": "6.0 Quantum Profit-Optimized",
+  "generated_at": "2026-03-26T13:54:35",
+  "last_close": 540.0,
+  "last_date": "2026-03-26",
+  "regime": {
+    "regime": "BULL (Gradual)",
+    "confidence": 0.7,
+    "color": "green",
+    "volatility_pct": 2.01,
+    "vol_ratio": 0.34,
+    "trap_score": 0
+  },
+  "smart_money": {
+    "regime": "RETAIL",
+    "buy_concentration": 0,
+    "sell_concentration": 0,
+    "trap_score": 0
+  },
+  "strategy": null,
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 6,
+    "price_change_pct_20d": 9.09,
+    "volatility_pct": 2.49,
+    "volatility_label": "MODERATE",
+    "rsi": 69.8,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "True",
+    "bb_position_pct": 73.1,
+    "recent_5d_momentum": -0.38,
+    "last_close": 540.0,
+    "last_date": "2026-03-26 00:00:00",
+    "support": 490.0,
+    "resistance": 555.0,
+    "cci": 56.3,
+    "williams_r": -25.9,
+    "stoch_k": 74.1,
+    "stoch_d": 77.0,
+    "obv_trend": "Falling",
+    "vol_ratio": 0.34
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-29",
+      "day_name": "Sunday",
+      "predicted_close": 532.53,
+      "low_band": 516.41,
+      "high_band": 548.64,
+      "change_pct": -1.38,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-27"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "day_name": "Monday",
+      "predicted_close": 533.64,
+      "low_band": 517.48,
+      "high_band": 549.79,
+      "change_pct": 0.21,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-28"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "day_name": "Tuesday",
+      "predicted_close": 534.75,
+      "low_band": 518.56,
+      "high_band": 550.93,
+      "change_pct": 0.21,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-29"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-02",
+      "day_name": "Thursday",
+      "predicted_close": 535.86,
+      "low_band": 519.64,
+      "high_band": 552.08,
+      "change_pct": 0.21,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-02"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-05",
+      "day_name": "Sunday",
+      "predicted_close": 536.97,
+      "low_band": 520.72,
+      "high_band": 553.22,
+      "change_pct": 0.21,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-05"
+    },
+    {
+      "day": 6,
+      "date": "2026-04-06",
+      "day_name": "Monday",
+      "predicted_close": 538.08,
+      "low_band": 521.8,
+      "high_band": 554.37,
+      "change_pct": 0.21,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-06"
+    },
+    {
+      "day": 7,
+      "date": "2026-04-07",
+      "day_name": "Tuesday",
+      "predicted_close": 539.2,
+      "low_band": 522.87,
+      "high_band": 555.52,
+      "change_pct": 0.21,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-07"
+    }
+  ],
+  "anomalies": [
+    {
+      "date": "2025-07-13",
+      "close": 535.77,
+      "change_pct": 4.81,
+      "z_score": 4.18,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2025-09-18",
+      "close": 483.0,
+      "change_pct": -5.88,
+      "z_score": -5.21,
+      "label": "\ud83d\udd3b CRASH"
+    },
+    {
+      "date": "2025-09-21",
+      "close": 510.18,
+      "change_pct": 5.63,
+      "z_score": 4.89,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2026-03-09",
+      "close": 545.0,
+      "change_pct": 8.13,
+      "z_score": 7.1,
+      "label": "\ud83d\udd3a SPIKE"
+    }
+  ],
+  "ml_metrics": null
+}

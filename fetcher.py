@@ -23,7 +23,7 @@ import time
 import json
 import hashlib
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
@@ -85,14 +85,17 @@ def robust_request(
     backoff: float = 1.5,
     method: str = "GET",
     json_body: dict = None,
+    verify: bool = True,
 ) -> Optional[requests.Response]:
     headers = headers or HEADERS
     for attempt in range(retries):
         try:
+            kwargs = {"headers": headers, "timeout": timeout, "verify": verify}
             if method == "POST":
-                r = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+                r = requests.post(url, json=json_body, **kwargs)
             else:
-                r = requests.get(url, headers=headers, timeout=timeout)
+                r = requests.get(url, **kwargs)
+            
             if r.status_code == 200:
                 return r
             if r.status_code in (403, 429, 503):
@@ -333,7 +336,7 @@ def _fetch_merolagani(symbol: str, start: datetime, end: datetime) -> Optional[p
         if data.get("s") != "ok" or not data.get("t"):
             return None
         df = pd.DataFrame({
-            "date": [datetime.fromtimestamp(ts) for ts in data["t"]],
+            "date": [datetime.fromtimestamp(ts, tz=timezone.utc).date() for ts in data["t"]],
             "open": data.get("o", [np.nan] * len(data["t"])),
             "high": data.get("h", [np.nan] * len(data["t"])),
             "low": data.get("l", [np.nan] * len(data["t"])),
@@ -377,31 +380,183 @@ def _fetch_nepalstock(company_id: str, start: datetime, end: datetime) -> Option
         return None
 
 
+def fetch_live_price(symbol: str) -> Optional[float]:
+    """Scrape the latest LTP for a symbol using multiple sources (real-time)."""
+    sym = symbol.upper().strip()
+    
+    # Source 1: NEPSE Official Live JSON
+    try:
+        url = "https://nepalstock.com.np/api/nots/market/active-securities"
+        r = robust_request(url, timeout=5, verify=False)
+        if r:
+            data = r.json()
+            for item in data:
+                if item.get("symbol") == sym:
+                    price = item.get("lastTradedPrice") or item.get("closePrice")
+                    if price and float(price) > 0: return float(price)
+    except Exception:
+        pass
+
+    # Source 2: MeroLagani Today's Share Price
+    try:
+        r = robust_request("https://merolagani.com/LatestMarket.aspx", timeout=8, verify=False)
+        if r:
+            tables = pd.read_html(r.text)
+            for t in tables:
+                cols = [str(c).upper() for c in t.columns]
+                if "SYMBOL" in cols:
+                    sym_idx = cols.index("SYMBOL")
+                    row = t[t.iloc[:, sym_idx].astype(str).str.upper().str.strip() == sym]
+                    if not row.empty:
+                        # Find LTP column - specifically look for "LTP" text
+                        ltp_idx = next((i for i, c in enumerate(cols) if "LTP" in c), 1)
+                        val = row.iloc[0, ltp_idx]
+                        price = float(str(val).replace(",", ""))
+                        if price > 0: return price
+    except Exception:
+        pass
+
+    # Source 3: ShareSansar Today Share Price
+    try:
+        r = robust_request("https://www.sharesansar.com/today-share-price", timeout=8, verify=False)
+        if r:
+            tables = pd.read_html(r.text)
+            for t in tables:
+                cols = [str(c).lower() for c in t.columns]
+                if "symbol" in cols:
+                    sym_idx = cols.index("symbol")
+                    row = t[t.iloc[:, sym_idx].astype(str).str.upper().str.strip() == sym]
+                    if not row.empty:
+                        # ShareSansar: LTP is usually index cols.index("ltp")
+                        ltp_idx = cols.index("ltp") if "ltp" in cols else 1
+                        val = row.iloc[0, ltp_idx]
+                        price = float(str(val).replace(",", ""))
+                        if price > 0: return price
+    except Exception:
+        pass
+
+    return None
+
+
 def _fetch_sharesansar(symbol: str) -> Optional[pd.DataFrame]:
     try:
         r = robust_request(f"https://www.sharesansar.com/company/{symbol.lower()}")
-        if r is None:
-            return None
+        if r is None: return None
         tables = pd.read_html(r.text)
         for t in tables:
             cols = [str(c).lower() for c in t.columns]
             if any("close" in c or "ltp" in c for c in cols):
-                rename = {}
-                for orig, cl in zip(t.columns, cols):
-                    if "date" in cl:        rename[orig] = "date"
-                    elif "open" in cl:      rename[orig] = "open"
-                    elif "high" in cl:      rename[orig] = "high"
-                    elif "low" in cl:       rename[orig] = "low"
-                    elif "close" in cl or "ltp" in cl: rename[orig] = "close"
-                    elif "vol" in cl or "qty" in cl:   rename[orig] = "volume"
+                rename = {o: "date" for o in t.columns if "date" in str(o).lower()}
+                rename.update({o: "open" for o in t.columns if "open" in str(o).lower()})
+                rename.update({o: "high" for o in t.columns if "high" in str(o).lower()})
+                rename.update({o: "low" for o in t.columns if "low" in str(o).lower()})
+                rename.update({o: "close" for o in t.columns if "close" in str(o).lower() or "ltp" in str(o).lower()})
+                rename.update({o: "volume" for o in t.columns if "vol" in str(o).lower() or "qty" in str(o).lower()})
                 t = t.rename(columns=rename)
                 if "close" in t.columns:
                     df = _to_ohlcv(t)
-                    if len(df) > 0:
-                        return df
-    except Exception as exc:
-        logger.debug("ShareSansar fetch error for %s: %s", symbol, exc)
+                    if len(df) > 0: return df
+    except Exception:
+        pass
     return None
+    
+
+# ── Floorsheet & Smart Money Data ─────────────────────────────────────────────
+
+def fetch_floorsheet(symbol: str) -> Optional[pd.DataFrame]:
+    """
+    Fetch the latest floorsheet (intraday transactions) for a symbol 
+    from ShareSansar. Used to detect buyer/seller concentration.
+    """
+    symbol = symbol.upper()
+    try:
+        url = f"https://www.sharesansar.com/floorsheet?symbol={symbol}"
+        r = robust_request(url, headers={**HEADERS, "Referer": "https://www.sharesansar.com/"})
+        if r is None:
+            return None
+        
+        tables = pd.read_html(r.text)
+        for t in tables:
+            cols = [str(c).lower() for c in t.columns]
+            if "buyer" in cols and "seller" in cols:
+                # Rename columns for internal consistency
+                t = t.rename(columns={
+                    c: "buyer_broker" for c in t.columns if "buyer" in c.lower()
+                })
+                t = t.rename(columns={
+                    c: "seller_broker" for c in t.columns if "seller" in c.lower()
+                })
+                t = t.rename(columns={
+                    c: "quantity" for c in t.columns if "qty" in c.lower() or "quantity" in c.lower()
+                })
+                t = t.rename(columns={
+                    c: "rate" for c in t.columns if "rate" in c.lower() or "price" in c.lower()
+                })
+                return t
+    except Exception as e:
+        logger.debug("Floorsheet fetch error for %s: %s", symbol, e)
+    return None
+
+
+def get_smart_money_signals(symbol: str) -> Dict[str, Any]:
+    """
+    Analyzes floorsheet for broker-wise concentration.
+    Returns: {
+        'buy_concentration_top5': float,
+        'sell_concentration_top5': float,
+        'net_broker_flow': float,
+        'smart_money_sentiment': str
+    }
+    """
+    df = fetch_floorsheet(symbol)
+    if df is None or len(df) == 0:
+        return {
+            "buy_concentration_top5": 0.0,
+            "sell_concentration_top5": 0.0,
+            "net_broker_flow": 0.0,
+            "smart_money_sentiment": "NEUTRAL"
+        }
+    
+    try:
+        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
+        total_vol = df["quantity"].sum()
+        
+        # Group by brokers
+        buyers = df.groupby("buyer_broker")["quantity"].sum().sort_values(ascending=False)
+        sellers = df.groupby("seller_broker")["quantity"].sum().sort_values(ascending=False)
+        
+        top5_buy = buyers.head(5).sum()
+        top5_sell = sellers.head(5).sum()
+        
+        buy_conc = (top5_buy / total_vol) if total_vol > 0 else 0
+        sell_conc = (top5_sell / total_vol) if total_vol > 0 else 0
+        
+        net_flow = top5_buy - top5_sell
+        
+        # Heuristic: If top 5 buyers occupy > 40% of volume and net flow is positive, Sm Money is Accumulating.
+        sentiment = "NEUTRAL"
+        if buy_conc > 0.4 and net_flow > 0:
+            sentiment = "ACCUMULATION 🏦"
+        elif sell_conc > 0.4 and net_flow < 0:
+            sentiment = "DISTRIBUTION 📉"
+        elif abs(buy_conc - sell_conc) < 0.05:
+            sentiment = "CHOPPY / RETAIL 🤝"
+            
+        return {
+            "buy_concentration_top5": round(float(buy_conc), 3),
+            "sell_concentration_top5": round(float(sell_conc), 3),
+            "net_broker_flow": float(net_flow),
+            "smart_money_sentiment": sentiment,
+            "top_buyer": int(buyers.index[0]) if not buyers.empty else None,
+            "top_seller": int(sellers.index[0]) if not sellers.empty else None
+        }
+    except Exception:
+        return {
+            "buy_concentration_top5": 0.0,
+            "sell_concentration_top5": 0.0,
+            "net_broker_flow": 0.0,
+            "smart_money_sentiment": "ERROR"
+        }
 
 
 # ── Sentiment / News Data ─────────────────────────────────────────────────────

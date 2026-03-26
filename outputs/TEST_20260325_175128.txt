@@ -1,0 +1,22 @@
+NEPSE Prediction Report — TEST
+Generated: 2026-03-25T17:51:28
+Dataset : D:\new_py\nepse_predict\data\TEST.csv
+Plot    : D:\new_py\nepse_predict\outputs\TEST_20260325_175128.png
+
+Trend: NEUTRAL (20d=-6.51%, pred5d=+0.44%)
+Recommendation: HOLD — Predicted +0.44% over ~5 sessions; edge not strong vs noise (vol=normal).
+
+Model validation (time-based holdout):
+- Linear Regression: MAE=19.323, RMSE=24.592 (train=240, valid=59)
+- Random Forest    : MAE=18.989, RMSE=22.870 (train=240, valid=59)
+
+Forecast next 7 business days (NPR):
+- 2026-03-18: blend=1229.30 (lr=1237.54, rf=1224.86), Δ%=-0.53%
+- 2026-03-19: blend=1227.09 (lr=1233.63, rf=1223.58), Δ%=-0.18%
+- 2026-03-20: blend=1223.58 (lr=1228.00, rf=1221.20), Δ%=-0.29%
+- 2026-03-23: blend=1226.05 (lr=1230.19, rf=1223.82), Δ%=+0.20%
+- 2026-03-24: blend=1241.31 (lr=1237.89, rf=1243.15), Δ%=+1.24%
+- 2026-03-25: blend=1238.48 (lr=1238.65, rf=1238.39), Δ%=-0.23%
+- 2026-03-26: blend=1233.42 (lr=1235.81, rf=1232.13), Δ%=-0.41%
+
+Ollama analysis: (not available — ollama not running or request failed)

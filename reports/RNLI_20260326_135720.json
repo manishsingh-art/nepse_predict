@@ -1,0 +1,194 @@
+{
+  "symbol": "RNLI",
+  "version": "6.0 Quantum Profit-Optimized",
+  "generated_at": "2026-03-26T13:57:20",
+  "last_close": 490.6,
+  "last_date": "2026-03-26",
+  "regime": {
+    "regime": "BULL (Gradual)",
+    "confidence": 0.7,
+    "color": "green",
+    "volatility_pct": 3.32,
+    "vol_ratio": 0.56,
+    "trap_score": 0
+  },
+  "smart_money": {
+    "regime": "RETAIL",
+    "buy_concentration": 0,
+    "sell_concentration": 0,
+    "trap_score": 0
+  },
+  "strategy": null,
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 6,
+    "price_change_pct_20d": 9.02,
+    "volatility_pct": 3.48,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "rsi": 57.6,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "True",
+    "bb_position_pct": 57.2,
+    "recent_5d_momentum": -2.68,
+    "last_close": 490.6,
+    "last_date": "2026-03-26 00:00:00",
+    "support": 445.0,
+    "resistance": 520.2,
+    "cci": 23.9,
+    "williams_r": -52.7,
+    "stoch_k": 47.3,
+    "stoch_d": 58.6,
+    "obv_trend": "Falling",
+    "vol_ratio": 0.56
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-29",
+      "day_name": "Sunday",
+      "predicted_close": 489.34,
+      "low_band": 471.47,
+      "high_band": 507.22,
+      "change_pct": -0.26,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-27"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "day_name": "Monday",
+      "predicted_close": 489.69,
+      "low_band": 471.81,
+      "high_band": 507.58,
+      "change_pct": 0.07,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-28"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "day_name": "Tuesday",
+      "predicted_close": 490.04,
+      "low_band": 472.14,
+      "high_band": 507.94,
+      "change_pct": 0.07,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-11-29"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-02",
+      "day_name": "Thursday",
+      "predicted_close": 490.39,
+      "low_band": 472.48,
+      "high_band": 508.3,
+      "change_pct": 0.07,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-02"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-05",
+      "day_name": "Sunday",
+      "predicted_close": 490.74,
+      "low_band": 472.81,
+      "high_band": 508.66,
+      "change_pct": 0.07,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-05"
+    },
+    {
+      "day": 6,
+      "date": "2026-04-06",
+      "day_name": "Monday",
+      "predicted_close": 491.09,
+      "low_band": 473.15,
+      "high_band": 509.02,
+      "change_pct": 0.07,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-06"
+    },
+    {
+      "day": 7,
+      "date": "2026-04-07",
+      "day_name": "Tuesday",
+      "predicted_close": 491.44,
+      "low_band": 473.49,
+      "high_band": 509.39,
+      "change_pct": 0.07,
+      "direction_prob": 0.5,
+      "confidence": "medium",
+      "bs_date": "2082-12-07"
+    }
+  ],
+  "anomalies": [
+    {
+      "date": "2025-07-03",
+      "close": 479.7,
+      "change_pct": 4.4,
+      "z_score": 2.65,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2025-09-18",
+      "close": 424.0,
+      "change_pct": -5.45,
+      "z_score": -3.32,
+      "label": "\ud83d\udd3b CRASH"
+    },
+    {
+      "date": "2025-09-21",
+      "close": 447.89,
+      "change_pct": 5.63,
+      "z_score": 3.4,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2025-09-23",
+      "close": 467.0,
+      "change_pct": 4.27,
+      "z_score": 2.57,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2025-10-07",
+      "close": 451.3,
+      "change_pct": -4.39,
+      "z_score": -2.68,
+      "label": "\ud83d\udd3b CRASH"
+    },
+    {
+      "date": "2025-10-28",
+      "close": 469.0,
+      "change_pct": 6.83,
+      "z_score": 4.13,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2025-11-24",
+      "close": 502.0,
+      "change_pct": 5.46,
+      "z_score": 3.3,
+      "label": "\ud83d\udd3a SPIKE"
+    },
+    {
+      "date": "2026-03-09",
+      "close": 520.2,
+      "change_pct": 8.15,
+      "z_score": 4.93,
+      "label": "\ud83d\udd3a SPIKE"
+    }
+  ],
+  "ml_metrics": null
+}

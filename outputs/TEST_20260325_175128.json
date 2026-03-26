@@ -1,0 +1,83 @@
+{
+  "symbol": "TEST",
+  "generated_at": "2026-03-25T17:51:28",
+  "dataset_csv": "D:\\new_py\\nepse_predict\\data\\TEST.csv",
+  "plot_path": "D:\\new_py\\nepse_predict\\outputs\\TEST_20260325_175128.png",
+  "trend": {
+    "label": "neutral",
+    "reason": "20d=-6.51%, pred5d=+0.44%"
+  },
+  "recommendation": {
+    "label": "hold",
+    "reason": "Predicted +0.44% over ~5 sessions; edge not strong vs noise (vol=normal)."
+  },
+  "metrics": {
+    "linear_regression": {
+      "mae": 19.322973679458894,
+      "rmse": 24.5922301586578,
+      "n_train": 240,
+      "n_valid": 59
+    },
+    "random_forest": {
+      "mae": 18.988779501838387,
+      "rmse": 22.869818686899283,
+      "n_train": 240,
+      "n_valid": 59
+    }
+  },
+  "forecast": [
+    {
+      "date": "2026-03-18",
+      "predicted_close_lr": 1237.54,
+      "predicted_close_rf": 1224.86,
+      "predicted_close_blend": 1229.3,
+      "expected_change_pct_from_last": -0.53
+    },
+    {
+      "date": "2026-03-19",
+      "predicted_close_lr": 1233.63,
+      "predicted_close_rf": 1223.58,
+      "predicted_close_blend": 1227.09,
+      "expected_change_pct_from_last": -0.18
+    },
+    {
+      "date": "2026-03-20",
+      "predicted_close_lr": 1228.0,
+      "predicted_close_rf": 1221.2,
+      "predicted_close_blend": 1223.58,
+      "expected_change_pct_from_last": -0.29
+    },
+    {
+      "date": "2026-03-23",
+      "predicted_close_lr": 1230.19,
+      "predicted_close_rf": 1223.82,
+      "predicted_close_blend": 1226.05,
+      "expected_change_pct_from_last": 0.2
+    },
+    {
+      "date": "2026-03-24",
+      "predicted_close_lr": 1237.89,
+      "predicted_close_rf": 1243.15,
+      "predicted_close_blend": 1241.31,
+      "expected_change_pct_from_last": 1.24
+    },
+    {
+      "date": "2026-03-25",
+      "predicted_close_lr": 1238.65,
+      "predicted_close_rf": 1238.39,
+      "predicted_close_blend": 1238.48,
+      "expected_change_pct_from_last": -0.23
+    },
+    {
+      "date": "2026-03-26",
+      "predicted_close_lr": 1235.81,
+      "predicted_close_rf": 1232.13,
+      "predicted_close_blend": 1233.42,
+      "expected_change_pct_from_last": -0.41
+    }
+  ],
+  "comparison": null,
+  "ollama": {
+    "model_output": null
+  }
+}

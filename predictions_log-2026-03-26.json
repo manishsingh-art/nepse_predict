@@ -1,0 +1,804 @@
+{
+  "ALICL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 490.17,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "AKPL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 298.71,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "AKJCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 371.25,
+      "actual_close": 404.0,
+      "error_pct": 8.82
+    },
+    {
+      "date": "2026-03-27",
+      "predicted_close": 362.99,
+      "actual_close": null,
+      "error_pct": null
+    },
+    {
+      "date": "2026-03-29",
+      "predicted_close": 362.99,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "AHL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 571.34,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "ACLBSL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1055.44,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "ALBSL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1181.86,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "AHPC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 313.93,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "ADBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 325.32,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BARUN": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 389.89,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BANDIPUR": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1004.54,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BFC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 513.81,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "API": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 343.58,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BBC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 5178.41,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "AVYAN": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1187.89,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "ANLB": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 6796.22,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BEDC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 581.9,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BGWT": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 803.1,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BHL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 239.52,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BHDC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 509.38,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BHCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 604.73,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BHPL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 661.1,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BNHC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 345.24,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BNL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 15751.66,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BNT": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 11907.98,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BPCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 785.04,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BOKD86": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1091.05,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "BUNGAL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 677.78,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CBBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 951.3,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "C30MF": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 9.92,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CFCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 563.3,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CGH": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 885.2,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CHCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 507.18,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CHDC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 2716.12,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CHL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 318.72,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CLI": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 502.34,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CIT": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1860.64,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CITY": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 528.27,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CKHL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 711.16,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CMF2": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 10.2,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CORBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 2171.69,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CREST": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1374.38,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CZBIL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 224.18,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "CYCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1647.15,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "DDBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 876.6,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "DHEL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 735.78,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "DHPL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 342.89,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "DLBS": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1438.44,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "EBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 711.86,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "DOLTI": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 546.46,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "DORDI": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 314.18,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "EBLD86": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1101.61,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "EDBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 646.89,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "ENL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 988.95,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "EHPL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 478.2,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "FOWAD": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1136.66,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "FMDBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 898.11,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GBBD85": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1093.82,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GBBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 422.25,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GBIME": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 254.83,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GBIMESY2": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 9.49,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GBLBS": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 823.2,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GCIL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 455.54,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GHL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 272.27,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GFCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 680.72,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GIBF1": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 11.12,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GILB": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1223.42,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GLBSL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 2092.99,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GMFIL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 512.32,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GMFBS": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1534.61,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GLH": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 300.8,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GMLI": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1799.7,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GRDBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1238.71,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GUFL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 550.13,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "GVL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 525.0,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "H8020": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 11.59,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HATHY": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1009.41,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HDHPC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 244.25,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HBL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 224.73,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HEI": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 554.19,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HDL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1208.04,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HEIP": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 334.96,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HHL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 383.78,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HIDCL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 301.99,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HIDCLP": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 226.74,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HIMSTAR": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 1022.61,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HLICF": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 9.6,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HLI": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 402.46,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HLBSL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 944.19,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HPPL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 409.11,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HRL": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 934.73,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "HURJA": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 285.16,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "ICFC": [
+    {
+      "date": "2026-03-26",
+      "predicted_close": 679.63,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "SONA": [
+    {
+      "date": "2026-03-27",
+      "predicted_close": 479.78,
+      "actual_close": null,
+      "error_pct": null
+    },
+    {
+      "date": "2026-03-29",
+      "predicted_close": 465.95,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "NABIL": [
+    {
+      "date": "2026-03-29",
+      "predicted_close": 532.53,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "RNLI": [
+    {
+      "date": "2026-03-29",
+      "predicted_close": 489.34,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "SNLI": [
+    {
+      "date": "2026-03-29",
+      "predicted_close": 484.43,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "NIFRA": [
+    {
+      "date": "2026-03-29",
+      "predicted_close": 292.48,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ],
+  "NTC": [
+    {
+      "date": "2026-03-29",
+      "predicted_close": 891.79,
+      "actual_close": null,
+      "error_pct": null
+    }
+  ]
+}

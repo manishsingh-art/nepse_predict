@@ -1,0 +1,117 @@
+{
+  "symbol": "AKJCL",
+  "generated_at": "2026-03-26T11:26:58",
+  "last_close": 404.2,
+  "last_date": "2026-03-26",
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 4,
+    "price_change_pct_20d": 18.15,
+    "volatility_pct": 4.62,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "rsi": 65.0,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "False",
+    "bb_position_pct": 71.4,
+    "recent_5d_momentum": -1.11,
+    "last_close": 404.2,
+    "last_date": "2026-03-26 22:51:01",
+    "support": 335.0,
+    "resistance": 431.8,
+    "cci": 54.2,
+    "williams_r": -38.4,
+    "stoch_k": 61.6,
+    "stoch_d": 67.9,
+    "obv_trend": "Falling",
+    "vol_ratio": 0.04
+  },
+  "sentiment": {
+    "score": -0.4,
+    "label": "negative",
+    "count": 5
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-29",
+      "predicted_close": 444.62,
+      "low_band": 416.01,
+      "high_band": 473.23,
+      "change_pct": 10.0,
+      "direction_prob": 0.656,
+      "confidence": "high"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-30",
+      "predicted_close": 489.08,
+      "low_band": 454.9,
+      "high_band": 523.26,
+      "change_pct": 10.0,
+      "direction_prob": 0.378,
+      "confidence": "medium"
+    },
+    {
+      "day": 3,
+      "date": "2026-03-31",
+      "predicted_close": 535.23,
+      "low_band": 495.49,
+      "high_band": 574.97,
+      "change_pct": 9.44,
+      "direction_prob": 0.744,
+      "confidence": "high"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-02",
+      "predicted_close": 568.81,
+      "low_band": 524.99,
+      "high_band": 612.63,
+      "change_pct": 6.27,
+      "direction_prob": 0.825,
+      "confidence": "high"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-05",
+      "predicted_close": 599.64,
+      "low_band": 554.29,
+      "high_band": 644.99,
+      "change_pct": 5.42,
+      "direction_prob": 0.843,
+      "confidence": "high"
+    },
+    {
+      "day": 6,
+      "date": "2026-04-06",
+      "predicted_close": 623.34,
+      "low_band": 577.55,
+      "high_band": 669.13,
+      "change_pct": 3.95,
+      "direction_prob": 0.865,
+      "confidence": "high"
+    },
+    {
+      "day": 7,
+      "date": "2026-04-07",
+      "predicted_close": 628.8,
+      "low_band": 584.88,
+      "high_band": 672.73,
+      "change_pct": 0.88,
+      "direction_prob": 0.498,
+      "confidence": "low"
+    }
+  ],
+  "ml_metrics": {
+    "avg_mae": 28.611,
+    "avg_dir_acc": 54.37,
+    "avg_mape": 9.613,
+    "models_used": [
+      "lgb",
+      "xgb",
+      "gbm",
+      "rf",
+      "ridge"
+    ]
+  }
+}
