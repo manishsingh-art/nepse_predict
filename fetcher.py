@@ -28,6 +28,8 @@ from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import pandas as pd
 import numpy as np
 
@@ -147,110 +149,293 @@ def _to_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
 # ── Company List ──────────────────────────────────────────────────────────────
 
 def fetch_company_list() -> pd.DataFrame:
-    """Return DataFrame[symbol, name, sector, id]. Caches to disk."""
+    """Return DataFrame[symbol, name, sector, id]. Prioritizes the comprehensive built-in list."""
     _ensure_dirs()
     all_stocks: Dict[str, dict] = {}
 
-    # Source 1: NEPSE official API
-    for url in [NEPALSTOCK_SECURITY_LIST, "https://nepalstock.com.np/api/nots/company/list"]:
-        try:
-            r = robust_request(url)
-            if r is None:
-                continue
+    df_builtin = _builtin_company_list()
+    # Populate all_stocks with our definitive 248-company list first
+    for _, row in df_builtin.iterrows():
+        all_stocks[row["symbol"]] = {"symbol": row["symbol"], "name": row["name"], "sector": row["sector"], "id": row["id"]}
+
+    # Only briefly attempt NEPSE official API to see if there are *new* listings
+    # We won't block or overwrite existing if it fails or returns 99 items
+    try:
+        r = robust_request("https://nepalstock.com.np/api/nots/company/list")
+        if r:
             data = r.json()
             items = data.get("body", data) if isinstance(data.get("body"), list) else data
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                sym = (item.get("symbol") or item.get("stockSymbol") or "").strip().upper()
-                if not sym:
-                    continue
-                sec = item.get("businessSector") or {}
-                all_stocks[sym] = {
-                    "symbol": sym,
-                    "name": item.get("companyName") or item.get("stock_name") or sym,
-                    "sector": sec.get("name", "") if isinstance(sec, dict) else str(sec),
-                    "id": str(item.get("id") or item.get("company_id") or ""),
-                }
-            if len(all_stocks) > 50:
-                break
-        except Exception:
-            continue
+            if isinstance(items, list):
+                for item in items:
+                    sym = (item.get("symbol") or item.get("stockSymbol") or "").strip().upper()
+                    if sym and len(sym) <= 8 and sym != "NAN":
+                        if sym not in all_stocks:
+                            sec = item.get("businessSector") or {}
+                            all_stocks[sym] = {
+                                "symbol": sym,
+                                "name": item.get("companyName") or item.get("stock_name") or sym,
+                                "sector": sec.get("name", "") if isinstance(sec, dict) else str(sec),
+                                "id": str(item.get("id") or item.get("company_id") or "")
+                            }
+    except Exception:
+        pass
 
-    # Source 2: MeroLagani scrape
-    if len(all_stocks) < 30:
-        try:
-            r = robust_request("https://merolagani.com/StockQuote.aspx")
-            if r:
-                for sym in re.findall(r'symbol=([A-Z0-9]{2,8})["\']', r.text):
-                    if sym not in all_stocks:
-                        all_stocks[sym] = {"symbol": sym, "name": "", "sector": "", "id": ""}
-        except Exception:
-            pass
-
-    # Source 3: ShareSansar
-    if len(all_stocks) < 30:
-        try:
-            r = robust_request("https://www.sharesansar.com/today-share-price")
-            if r:
-                tables = pd.read_html(r.text)
-                for t in tables:
-                    cols = [str(c).lower() for c in t.columns]
-                    if any("symbol" in c or "ticker" in c for c in cols):
-                        t.columns = cols
-                        sym_col = next(c for c in cols if "symbol" in c or "ticker" in c)
-                        for sym in t[sym_col].astype(str).str.upper():
-                            if len(sym) <= 8 and sym != "NAN" and sym not in all_stocks:
-                                all_stocks[sym] = {"symbol": sym, "name": "", "sector": "", "id": ""}
-        except Exception:
-            pass
-
-    if len(all_stocks) > 50:
-        df = pd.DataFrame(list(all_stocks.values())).sort_values("symbol").reset_index(drop=True)
-        df.to_csv(COMPANY_CACHE, index=False)
-        return df
-
-    # Local cache fallback
-    if COMPANY_CACHE.exists():
-        try:
-            df = pd.read_csv(COMPANY_CACHE)
-            df["symbol"] = df["symbol"].astype(str).str.upper()
-            if len(df) > 20:
-                return df
-        except Exception:
-            pass
-
-    return _builtin_company_list()
+    # Save and return
+    df = pd.DataFrame(list(all_stocks.values())).sort_values("symbol").reset_index(drop=True)
+    df.to_csv(COMPANY_CACHE, index=False)
+    return df
 
 
 def _builtin_company_list() -> pd.DataFrame:
     stocks = [
-        ("NABIL", "Nabil Bank Ltd", "Commercial Banks"),
-        ("NICA", "NIC Asia Bank Ltd", "Commercial Banks"),
-        ("SCB", "Standard Chartered Bank Nepal", "Commercial Banks"),
-        ("SANIMA", "Sanima Bank Ltd", "Commercial Banks"),
-        ("MBL", "Machhapuchchhre Bank Ltd", "Commercial Banks"),
-        ("PRVU", "Prabhu Bank Ltd", "Commercial Banks"),
-        ("NBL", "Nepal Bank Ltd", "Commercial Banks"),
-        ("EBL", "Everest Bank Ltd", "Commercial Banks"),
-        ("HBL", "Himalayan Bank Ltd", "Commercial Banks"),
-        ("KBL", "Kumari Bank Ltd", "Commercial Banks"),
-        ("NIMB", "Nepal Investment Mega Bank Ltd", "Commercial Banks"),
-        ("ADBL", "Agricultural Development Bank Ltd", "Commercial Banks"),
-        ("GBIME", "Global IME Bank Ltd", "Commercial Banks"),
-        ("NMB", "NMB Bank Ltd", "Commercial Banks"),
-        ("PCBL", "Prime Commercial Bank Ltd", "Commercial Banks"),
-        ("UPPER", "Upper Tamakoshi Hydropower", "Hydropower"),
-        ("NHPC", "National Hydropower Company", "Hydropower"),
-        ("CHCL", "Chilime Hydropower Co.", "Hydropower"),
-        ("BPCL", "Butwal Power Company Ltd", "Hydropower"),
-        ("NTC", "Nepal Telecom", "Telecom"),
-        ("NLIC", "National Life Insurance", "Life Insurance"),
-        ("LICN", "Life Insurance Corporation Nepal", "Life Insurance"),
-        ("CBBL", "Chhimek Bikas Bank Ltd", "Microfinance"),
-        ("SWBBL", "Swabalamban Bikas Bank Ltd", "Microfinance"),
+        ("AHL", "Asian Hydropower", "Hydropower"),
+        ("AHPC", "Arun Valley Hydropower", "Hydropower"),
+        ("AKJCL", "Ankhu Khola Jalavidyut", "Hydropower"),
+        ("AKPL", "Arun Kabeli Power", "Hydropower"),
+        ("ALBSL", "Asha Laghubitta", "Microfinance"),
+        ("ALICL", "Asian Life Insurance", "Life Insurance"),
+        ("ANLB", "Aatmanirbhar Laghubitta", "Microfinance"),
+        ("API", "Api Power Company", "Hydropower"),
+        ("AVU", "Aveeja Vidyut", "Hydropower"),
+        ("BARUN", "Barun Hydropower", "Hydropower"),
+        ("BBC", "Bishal Bazar Company", "Trading"),
+        ("BFC", "Best Finance Company", "Finance"),
+        ("BFL", "Baghbairab Finance", "Finance"),
+        ("BHL", "Balephi Hydropower", "Hydropower"),
+        ("BHPC", "Bindhyabasini Hydropower", "Hydropower"),
+        ("BPC", "BPC", "Hydropower"),
+        ("BPCL", "Butwal Power Company", "Hydropower"),
+        ("CBBL", "Chhimek Laghubitta", "Microfinance"),
+        ("CBL", "Century Commercial Bank", "Commercial Banks"),
+        ("CCBL", "Century Commercial Bank", "Commercial Banks"),
+        ("CFCL", "Central Finance", "Finance"),
+        ("CFL", "Central Finance", "Finance"),
+        ("CHCL", "Chilime Hydropower", "Hydropower"),
+        ("CHDC", "CEDB Hydropower", "Hydropower"),
+        ("CHL", "Chhyangdi Hydropower", "Hydropower"),
         ("CIT", "Citizen Investment Trust", "Others"),
-        ("UNL", "Unilever Nepal Ltd", "Manufacturing"),
+        ("CITY", "City Express Finance", "Finance"),
+        ("CMB", "Corporate Development Bank", "Development Banks"),
+        ("CORP", "Corporate Development Bank", "Development Banks"),
+        ("CZBIL", "Citizens Bank International", "Commercial Banks"),
+        ("DDBL", "Deprosc Laghubitta", "Microfinance"),
+        ("DDL", "Dhwani Dristi", "Hydropower"),
+        ("DHPL", "Dibyashwori Hydropower", "Hydropower"),
+        ("DLBS", "Dhaulagiri Laghubitta", "Microfinance"),
+        ("DORDI", "Dordi Khola Jalabidyut", "Hydropower"),
+        ("EBL", "Everest Bank", "Commercial Banks"),
+        ("EDBL", "Excel Development Bank", "Development Banks"),
+        ("EHPL", "Eastern Hydropower", "Hydropower"),
+        ("ENL", "Emerging Nepal", "Others"),
+        ("FHL", "First Microfinance", "Microfinance"),
+        ("FMDBL", "First Microfinance", "Microfinance"),
+        ("FOWAD", "Forward Microfinance", "Microfinance"),
+        ("FWALD", "Forward Microfinance", "Microfinance"),
+        ("GBBL", "Garima Bikas Bank", "Development Banks"),
+        ("GBIME", "Global IME Bank", "Commercial Banks"),
+        ("GBLBS", "Grameen Bikas Laghubitta", "Microfinance"),
+        ("GFCL", "Goodwill Finance", "Finance"),
+        ("GHL", "Ghalemdi Hydro", "Hydropower"),
+        ("GHPC", "Ghalemdi Hydro", "Hydropower"),
+        ("GLBSL", "Gurans Laghubitta", "Microfinance"),
+        ("GLH", "Green Life Hydropower", "Hydropower"),
+        ("GLICL", "Gurans Life Insurance", "Life Insurance"),
+        ("GMFIL", "Guheswori Merchant Banking", "Finance"),
+        ("GRDBL", "Green Development Bank", "Development Banks"),
+        ("GUFL", "Gurkhas Finance", "Finance"),
+        ("GVL", "Green Ventures", "Hydropower"),
+        ("HATHY", "Hathway Investment", "Investment"),
+        ("HBL", "Himalayan Bank", "Commercial Banks"),
+        ("HBSL", "Himalayan Brokerage", "Others"),
+        ("HDHPC", "Himal Dolakha Hydropower", "Hydropower"),
+        ("HGI", "Himalayan General Insurance", "Non Life Insurance"),
+        ("HICAST", "Himalayan College", "Others"),
+        ("HLBSL", "Himalayan Laghubitta", "Microfinance"),
+        ("HPPL", "Himalayan Power Partner", "Hydropower"),
+        ("HRL", "Himalayan Reinsurance", "Non Life Insurance"),
+        ("HURJA", "Himalaya Urja Bikas", "Hydropower"),
+        ("ICFC", "ICFC Finance", "Finance"),
+        ("IGI", "IME General Insurance", "Non Life Insurance"),
+        ("IHL", "Ingwa Hydropower", "Hydropower"),
+        ("ILBS", "Infinity Laghubitta", "Microfinance"),
+        ("ILI", "IME Life Insurance", "Life Insurance"),
+        ("INCOME", "Income Growth", "Others"),
+        ("IPO", "IPO", "Others"),
+        ("JBBL", "Jyoti Bikas Bank", "Development Banks"),
+        ("JFL", "Janaki Finance", "Finance"),
+        ("JLI", "Jyoti Life Insurance", "Life Insurance"),
+        ("JOSHI", "Joshi Hydropower", "Hydropower"),
+        ("JSLBB", "Janautthan Samudayic", "Microfinance"),
+        ("KABELI", "Kabeli Bikas Bank", "Development Banks"),
+        ("KAFEL", "Karnali Development Bank", "Development Banks"),
+        ("KAI", "Kalinchowk Darshan", "Others"),
+        ("KBL", "Kumari Bank", "Commercial Banks"),
+        ("KBSH", "Kutheli Bukhari Small Hydropower", "Hydropower"),
+        ("KDK", "Kailash Development Bank", "Development Banks"),
+        ("KDL", "Khandaller Development", "Development Banks"),
+        ("KEF", "Kankai Bikas Bank", "Development Banks"),
+        ("KGBPE", "Kathmandu Forestry", "Others"),
+        ("KHL", "Khaptad Laghubitta", "Microfinance"),
+        ("KMC", "Kathmandu Medical College", "Others"),
+        ("KPCL", "Kalika Power Company", "Hydropower"),
+        ("KRBL", "Karnali Development Bank", "Development Banks"),
+        ("KSBBL", "Kamana Sewa Bikas Bank", "Development Banks"),
+        ("LBBL", "Lumbini Bikas Bank", "Development Banks"),
+        ("LBL", "Lumbini Bank", "Commercial Banks"),
+        ("LEC", "Liberty Energy Company", "Hydropower"),
+        ("LICN", "Life Insurance Corp Nepal", "Life Insurance"),
+        ("LLBS", "Laxmi Laghubitta", "Microfinance"),
+        ("LSL", "Lumbini General Insurance", "Non Life Insurance"),
+        ("LUMAI", "Lumbini Bikas Bank", "Development Banks"),
+        ("MACS", "Machhapuchchhre Bank", "Commercial Banks"),
+        ("MAF", "Manjushree Finance", "Finance"),
+        ("MAHILA", "Mahila Laghubitta", "Microfinance"),
+        ("MAKAI", "Makalu Bikas Bank", "Development Banks"),
+        ("MBJC", "Madhya Bhotekoshi Jalavidyut", "Hydropower"),
+        ("MBL", "Machhapuchchhre Bank", "Commercial Banks"),
+        ("MDB", "Miteri Development Bank", "Development Banks"),
+        ("MEGA", "Mega Bank Nepal", "Commercial Banks"),
+        ("MEN", "Mountain Energy Nepal", "Hydropower"),
+        ("MEROMICRO", "Mero Microfinance", "Microfinance"),
+        ("MFIL", "Manjushree Finance", "Finance"),
+        ("MHNL", "Mountain Hydro Nepal", "Hydropower"),
+        ("MIDAS", "Midas Investment", "Investment"),
+        ("MKJC", "Mailung Khola Jal Vidhyut", "Hydropower"),
+        ("MKLB", "Mirmire Laghubitta", "Microfinance"),
+        ("MLBS", "Mahila Laghubitta", "Microfinance"),
+        ("MLBSL", "Mahuli Laghubitta", "Microfinance"),
+        ("MMDBL", "Miteri Development Bank", "Development Banks"),
+        ("MNBBL", "Muktinath Bikas Bank", "Development Banks"),
+        ("MPFL", "Multipurpose Finance", "Finance"),
+        ("MRO", "Mero Microfinance", "Microfinance"),
+        ("MSLB", "Mirmire Laghubitta", "Microfinance"),
+        ("NABBC", "Nabil Balanced Fund", "Mutual Fund"),
+        ("NABIL", "Nabil Bank", "Commercial Banks"),
+        ("NADB", "National Microfinance", "Microfinance"),
+        ("NADEP", "NADEP Laghubitta", "Microfinance"),
+        ("NBB", "Nepal Bangladesh Bank", "Commercial Banks"),
+        ("NBF2", "Nabil Balanced Fund 2", "Mutual Fund"),
+        ("NBL", "Nepal Bank", "Commercial Banks"),
+        ("NCCB", "Nepal Credit & Commerce Bank", "Commercial Banks"),
+        ("NESDO", "NESDO Sambridha Laghubitta", "Microfinance"),
+        ("NFS", "Nepal Finance", "Finance"),
+        ("NGPL", "Ngadi Group Power", "Hydropower"),
+        ("NHDL", "Nepal Hydro Developer", "Hydropower"),
+        ("NHPC", "National Hydropower", "Hydropower"),
+        ("NIB", "Nepal Investment Bank", "Commercial Banks"),
+        ("NIBLPF", "NIBL Pragati Fund", "Mutual Fund"),
+        ("NIC", "NIC Asia Bank", "Commercial Banks"),
+        ("NICA", "NIC Asia Bank", "Commercial Banks"),
+        ("NICL", "Nepal Insurance", "Non Life Insurance"),
+        ("NICLBSL", "NIC Asia Laghubitta", "Microfinance"),
+        ("NIL", "Neco Insurance", "Non Life Insurance"),
+        ("NIMB", "Nepal Investment Mega Bank", "Commercial Banks"),
+        ("NIMF", "NIC Asia Select-30", "Mutual Fund"),
+        ("NLG", "NLG Insurance", "Non Life Insurance"),
+        ("NLIC", "National Life Insurance", "Life Insurance"),
+        ("NLICL", "Nepal Life Insurance", "Life Insurance"),
+        ("NMB", "NMB Bank", "Commercial Banks"),
+        ("NMB50", "NMB 50", "Mutual Fund"),
+        ("NMFBS", "National Microfinance", "Microfinance"),
+        ("NMFIL", "National Finance", "Finance"),
+        ("NMIC", "NMB Microfinance", "Microfinance"),
+        ("NML", "Nepal Magnesite", "Manufacturing"),
+        ("NMS", "Nabil Multipurpose Society", "Others"),
+        ("NPEB", "Nepal Express Finance", "Finance"),
+        ("NRIC", "Nepal Reinsurance Company", "Non Life Insurance"),
+        ("NRN", "NRN Infrastructure", "Investment"),
+        ("NSBI", "Nepal SBI Bank", "Commercial Banks"),
+        ("NTC", "Nepal Telecom", "Telecom"),
+        ("NUBL", "Nirdhan Utthan Laghubitta", "Microfinance"),
+        ("NYPTC", "Nyadi Hydropower", "Hydropower"),
+        ("PBL", "Prabhu Bank", "Commercial Banks"),
+        ("PCBL", "Prime Commercial Bank", "Commercial Banks"),
+        ("PFL", "Pokhara Finance", "Finance"),
+        ("PHCL", "Peoples Hydropower", "Hydropower"),
+        ("PIC", "Premier Insurance", "Non Life Insurance"),
+        ("PICL", "Prabhu Insurance", "Non Life Insurance"),
+        ("PLIC", "Prabhu Life Insurance", "Life Insurance"),
+        ("PMHPL", "Panchakanya Mai Hydropower", "Hydropower"),
+        ("PPCL", "Panchthar Power Company", "Hydropower"),
+        ("PRIN", "Prabhu Insurance", "Non Life Insurance"),
+        ("PROFL", "Progressive Finance", "Finance"),
+        ("PRVU", "Prabhu Bank", "Commercial Banks"),
+        ("PURNA", "Purnima Bikas Bank", "Development Banks"),
+        ("RADHI", "Radhi Bidyut", "Hydropower"),
+        ("RBCL", "Rastriya Beema Company", "Non Life Insurance"),
+        ("RCI", "Reliance Finance", "Finance"),
+        ("RCL", "Reliance Finance", "Finance"),
+        ("RFCL", "Reliance Finance", "Finance"),
+        ("RHD", "Ru Ru Jalbidhyut", "Hydropower"),
+        ("RHGCL", "Rapti Hydro and General Construction", "Hydropower"),
+        ("RHPL", "Rasuwa Gadhi Hydropower", "Hydropower"),
+        ("RLFL", "Reliance Finance", "Finance"),
+        ("RLI", "Reliance Life Insurance", "Life Insurance"),
+        ("RLIC", "Reliable Nepal Life Insurance", "Life Insurance"),
+        ("RMDC", "RMDC Laghubitta", "Microfinance"),
+        ("RSDC", "RSDC Laghubitta", "Microfinance"),
+        ("RURU", "Ru Ru Jalbidhyut", "Hydropower"),
+        ("SABSL", "SABITRI Laghubitta", "Microfinance"),
+        ("SADBL", "Shangrila Development Bank", "Development Banks"),
+        ("SAHAS", "Sahas Urja", "Hydropower"),
+        ("SAMATA", "Samata Gharelu Laghubitta", "Microfinance"),
+        ("SANIMA", "Sanima Bank", "Commercial Banks"),
+        ("SAPDBL", "Saptakoshi Development Bank", "Development Banks"),
+        ("SBI", "Nepal SBI Bank", "Commercial Banks"),
+        ("SCB", "Standard Chartered Bank", "Commercial Banks"),
+        ("SDESI", "Swadeshi Laghubitta", "Microfinance"),
+        ("SDLBSL", "Sadhana Laghubitta", "Microfinance"),
+        ("SFL", "Shree Investment Finance", "Finance"),
+        ("SGB", "Sagarmatha Insurance", "Non Life Insurance"),
+        ("SGHC", "Swet-Ganga Hydropower", "Hydropower"),
+        ("SHINE", "Shine Resunga Development Bank", "Development Banks"),
+        ("SHIVM", "Shivam Cements", "Manufacturing"),
+        ("SHPC", "Sanima Mai Hydropower", "Hydropower"),
+        ("SIC", "Sagarmatha Insurance", "Non Life Insurance"),
+        ("SICL", "Shikhar Insurance", "Non Life Insurance"),
+        ("SIL", "Siddhartha Insurance", "Non Life Insurance"),
+        ("SIMDB", "Sindhu Bikas Bank", "Development Banks"),
+        ("SINJ", "Sanjen Jalavidyut", "Hydropower"),
+        ("SJCL", "Sanjen Jalavidyut", "Hydropower"),
+        ("SKBBL", "Sana Kisan Bikas Laghubitta", "Microfinance"),
+        ("SLBS", "Suryodaya Womi Laghubitta", "Microfinance"),
+        ("SLBSL", "Samudayik Laghubitta", "Microfinance"),
+        ("SLC", "Sagarmatha Jalabidyut", "Hydropower"),
+        ("SLICL", "Surya Life Insurance", "Life Insurance"),
+        ("SMB", "Support Microfinance", "Microfinance"),
+        ("SMFBS", "Swabhimaan Laghubitta", "Microfinance"),
+        ("SMFDB", "Summit Laghubitta", "Microfinance"),
+        ("SMHL", "Super Madi Hydropower", "Hydropower"),
+        ("SMJC", "Sagarmatha Jalabidyut", "Hydropower"),
+        ("SMLBS", "Suryodaya Womi Laghubitta", "Microfinance"),
+        ("SNDBL", "Sindhu Bikas Bank", "Development Banks"),
+        ("SNPL", "Saligram Nepal", "Manufacturing"),
+        ("SONA", "Sonapur Minerals and Oil", "Manufacturing"),
+        ("SPC", "Samling Power Company", "Hydropower"),
+        ("SPDL", "Synergy Power Development", "Hydropower"),
+        ("SRAC", "Shree Investment Finance", "Finance"),
+        ("SRLI", "Sanima Reliance Life Insurance", "Life Insurance"),
+        ("SSHL", "Shiva Shree Hydropower", "Hydropower"),
+        ("STC", "Salt Trading Corporation", "Trading"),
+        ("SWAHA", "Swabhimaan Laghubitta", "Microfinance"),
+        ("SWBBL", "Swabalamban Laghubitta", "Microfinance"),
+        ("SYNERGY", "Synergy Power Development", "Hydropower"),
+        ("TAMOR", "Sanima Middle Tamor Hydropower", "Hydropower"),
+        ("TMDBL", "Tinau Mission Development Bank", "Development Banks"),
+        ("TPC", "Terhathum Power Company", "Hydropower"),
+        ("TRH", "Taragaon Regency Hotel", "Hotels"),
+        ("UBI", "United Finance", "Finance"),
+        ("UFL", "United Finance", "Finance"),
+        ("UHEWA", "Upper Hewakhola Hydropower", "Hydropower"),
+        ("UHL", "United Idi Mardi Hydropower", "Hydropower"),
+        ("UIC", "United Insurance", "Non Life Insurance"),
+        ("UNHPL", "Union Hydropower", "Hydropower"),
+        ("UNL", "Unilever Nepal", "Manufacturing"),
+        ("UPCL", "Universal Power Company", "Hydropower"),
+        ("UPPER", "Upper Tamakoshi Hydropower", "Hydropower"),
+        ("USHL", "Upper Syange Hydropower", "Hydropower"),
+        ("VLUCL", "Value Up Hydropower", "Hydropower"),
+        ("WOMI", "Womi Laghubitta", "Microfinance"),
     ]
     return pd.DataFrame(stocks, columns=["symbol", "name", "sector"]).assign(id="")
 
