@@ -188,6 +188,7 @@ def fetch_company_list() -> pd.DataFrame:
 
 def _builtin_company_list() -> pd.DataFrame:
     stocks = [
+        ("ADBL", "Agricultural Development Bank", "Commercial Banks"),
         ("AHL", "Asian Hydropower", "Hydropower"),
         ("AHPC", "Arun Valley Hydropower", "Hydropower"),
         ("AKJCL", "Ankhu Khola Jalavidyut", "Hydropower"),

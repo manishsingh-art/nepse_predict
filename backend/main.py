@@ -88,8 +88,11 @@ def get_stock_detail(symbol: str, db: Session = Depends(database.get_db)):
     prev_price_obj = db.query(models.Price).filter(models.Price.stock_id == stock.id).order_by(models.Price.date.desc()).offset(1).first()
     # Get 7 predictions for forecast
     latest_preds = db.query(models.Prediction).filter(models.Prediction.stock_id == stock.id).order_by(models.Prediction.date.desc()).limit(7).all()
-    # The most recent one holds all the analytics JSONs
-    top_pred = latest_preds[0] if latest_preds else None
+    # Find the prediction that holds the analytics JSONs (usually day 1)
+    top_pred = None
+    if latest_preds:
+        # Since date is future, latest_preds[0] is day 7. We want the one with JSON.
+        top_pred = next((p for p in latest_preds if p.technical_json or p.full_result_json), latest_preds[-1])
 
     change_pct = 0.0
     if latest_price_obj and prev_price_obj and prev_price_obj.close:

@@ -57,7 +57,14 @@ logger = logging.getLogger(__name__)
 REPORT_DIR = Path("reports")
 DATA_DIR   = Path("data")
 
-# ── Nepal Calendar ────────────────────────────────────────────────────────────
+# Database imports
+try:
+    from backend.database import SessionLocal, engine
+    from backend import models
+    import json
+    HAS_DB = True
+except ImportError:
+    HAS_DB = False
 try:
     from nepal_calendar import (
         NepalMarketCalendar, ad_to_bs, get_bs_month_name,
@@ -783,7 +790,7 @@ def run_ml_analysis(
         if perf_table:
             print(tabulate(perf_table, headers=["Date AD", "Predicted", "Actual/LTP", "Error%"], tablefmt="simple"))
 
-    # ── Trading Signals (Legacy section removed in v5.0 Upgrade) ──────────
+        # ── Trading Signals (Legacy section removed in v5.0 Upgrade) ──────────
 
         next_pred  = predictions[0]
         np_date = next_pred.get("date") if isinstance(next_pred, dict) else getattr(next_pred, "date", "")
@@ -796,6 +803,107 @@ def run_ml_analysis(
                     final_log[symbol.upper()][i] = updated
         save_log(final_log)
         print(f"\n  ✔ Prediction for {np_date} saved to {_log_path().name}")
+
+        # ── Save to Database for Frontend ──
+        if HAS_DB:
+            try:
+                db = SessionLocal()
+                stock_db = db.query(models.Stock).filter(models.Stock.symbol == symbol.upper()).first()
+                if not stock_db:
+                    companies = fetch_company_list()
+                    match = companies[companies["symbol"].str.upper() == symbol.upper()]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        stock_db = models.Stock(symbol=row["symbol"], name=row["name"], sector=row["sector"])
+                        db.add(stock_db)
+                        db.commit()
+                        db.refresh(stock_db)
+                
+                if stock_db:
+                    today_date = date.today()
+                    price_db = db.query(models.Price).filter(models.Price.stock_id == stock_db.id, models.Price.date == today_date).first()
+                    if not price_db:
+                        price_db = models.Price(stock_id=stock_db.id, date=today_date)
+                        db.add(price_db)
+                    price_db.close = last_price
+                    price_db.volume = df["volume"].tail(20).mean() if "volume" in df.columns else 0.0
+
+                    acc_metrics = {}
+                    top_feats_list = []
+                    if ml_report:
+                        acc_metrics = {
+                            "avg_mae": ml_report.avg_mae, "avg_rmse": ml_report.avg_rmse,
+                            "avg_dir_acc": ml_report.avg_dir_acc, "avg_mape": ml_report.avg_mape,
+                            "folds": [{"fold": f.fold, "mae": f.mae, "rmse": f.rmse, "dir_acc": f.dir_acc, "mape": f.mape} for f in ml_report.cv_folds]
+                        }
+                        if ml_report.feature_importance:
+                            top_feats_list = [{"name": k, "value": v} for k, v in ml_report.feature_importance.items()]
+
+                    scenarios_list = []
+                    if use_ml_success and ml_preds:
+                        scenarios_list = [
+                            {"label": "Bull Case", "probability": 30, "target": round(ml_preds[3].scenario_bull, 2), "change_pct": round((ml_preds[3].scenario_bull/last_price - 1)*100, 2)},
+                            {"label": "Base Case", "probability": 50, "target": round(ml_preds[3].predicted_close, 2), "change_pct": round((ml_preds[3].predicted_close/last_price - 1)*100, 2)},
+                            {"label": "Bear Case", "probability": 20, "target": round(ml_preds[3].scenario_bear, 2), "change_pct": round((ml_preds[3].scenario_bear/last_price - 1)*100, 2)}
+                        ]
+
+                    # Standardize JSON strings
+                    ai_summary_txt = None
+                    if 'ai_summary' in locals(): ai_summary_txt = ai_summary
+                    elif 'technical_info' in locals() and 'ai_summary' in trend_info: ai_summary_txt = trend_info['ai_summary']
+
+                    full_res = {
+                        "trend_info": trend_info, "trade_plan": trade_plan, "sentiment": sentiment,
+                        "accuracy_metrics": acc_metrics, "top_features": top_feats_list, "anomalies": anomalies,
+                        "scenarios": scenarios_list, "regime": regime_info, "smart_money": sm_report,
+                        "final_signal": final_sig if 'final_sig' in locals() else 'HOLD',
+                        "final_confidence": final_conf if 'final_conf' in locals() else 0.5,
+                        "model_reliability": round(ml_report.avg_dir_acc, 1) if ml_report else 0,
+                        "signal_reason": ", ".join(reasons) if 'reasons' in locals() else "",
+                        "week52_high": df['close'].rolling(252).max().iloc[-1],
+                        "week52_low": df['close'].rolling(252).min().iloc[-1],
+                        "records_count": len(df),
+                        "date_range_start": df['date'].iloc[0].strftime('%Y-%m-%d'),
+                        "date_range_end": df['date'].iloc[-1].strftime('%Y-%m-%d'),
+                        "avg_vol_20d": df["volume"].tail(20).mean() if "volume" in df.columns else 0.0,
+                        "ai_summary": ai_summary_txt
+                    }
+
+                    # Add prediction rows
+                    if predictions:
+                        for i, p in enumerate(predictions):
+                            pred_date_str = p.date if not isinstance(p, dict) else p.get("date")
+                            if "T" in str(pred_date_str): pred_date_str = pred_date_str.split("T")[0]
+                            pred_date = datetime.strptime(str(pred_date_str), "%Y-%m-%d").date()
+
+                            db_pred = db.query(models.Prediction).filter(models.Prediction.stock_id == stock_db.id, models.Prediction.date == pred_date).first()
+                            if not db_pred:
+                                db_pred = models.Prediction(stock_id=stock_db.id, date=pred_date)
+                                db.add(db_pred)
+                            
+                            db_pred.predicted_close = p.predicted_close if not isinstance(p, dict) else float(p.get("predicted_close",0))
+                            db_pred.direction_prob = p.direction_prob if not isinstance(p, dict) else float(p.get("direction_prob",0))
+                            db_pred.confidence = p.direction_confidence if hasattr(p, 'direction_confidence') else float(p.get("direction_confidence", 0.5)) if isinstance(p, dict) else 0.5
+                            db_pred.signal = (final_sig if 'final_sig' in locals() else 'HOLD') if i == 0 else "HOLD"
+
+                            if i == 0:
+                                t_info = dict(trend_info)
+                                t_info["ai_summary"] = ai_summary_txt
+                                db_pred.technical_json = json.dumps(t_info, default=str)
+                                db_pred.trade_plan_json = json.dumps(trade_plan, default=str)
+                                db_pred.sentiment_json = json.dumps(sentiment, default=str)
+                                db_pred.accuracy_json = json.dumps(acc_metrics, default=str)
+                                db_pred.features_json = json.dumps(top_feats_list, default=str)
+                                db_pred.anomalies_json = json.dumps(anomalies, default=str)
+                                db_pred.full_result_json = json.dumps(full_res, default=str)
+
+                    db.commit()
+                    print(f"  ✔ Results synchronized to database ({stock_db.symbol})")
+            except Exception as e:
+                print(f"  {Fore.YELLOW}Database sync failed: {e}{Style.RESET_ALL}")
+            finally:
+                if 'db' in locals():
+                    db.close()
 
     # ── Risk Summary ──────────────────────────────────────────────────────────
     print_section("Risk Summary")
@@ -846,6 +954,29 @@ def run_ml_analysis(
         if summary:
             print(" " * 50, end="\r") # Clear the generating message
             print(f"  {summary.strip()}")
+            if HAS_DB:
+                try:
+                    db = SessionLocal()
+                    stock_db = db.query(models.Stock).filter(models.Stock.symbol == symbol.upper()).first()
+                    p_date_raw = predictions[0].date if not isinstance(predictions[0], dict) else predictions[0].get("date")
+                    if "T" in str(p_date_raw): p_date_raw = str(p_date_raw).split("T")[0]
+                    p_date = datetime.strptime(str(p_date_raw), "%Y-%m-%d").date()
+                    if stock_db:
+                        db_pred = db.query(models.Prediction).filter(models.Prediction.stock_id == stock_db.id, models.Prediction.date == p_date).first()
+                        if db_pred:
+                            if db_pred.technical_json:
+                                t = json.loads(db_pred.technical_json)
+                                t["ai_summary"] = summary.strip()
+                                db_pred.technical_json = json.dumps(t)
+                            if db_pred.full_result_json:
+                                f = json.loads(db_pred.full_result_json)
+                                f["ai_summary"] = summary.strip()
+                                db_pred.full_result_json = json.dumps(f)
+                            db.commit()
+                except Exception as e:
+                    pass
+                finally:
+                    if 'db' in locals(): db.close()
         else:
             print(f"  {Fore.RED}AI Analyst unavailable (is Ollama running?){Style.RESET_ALL}")
 
