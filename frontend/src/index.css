@@ -53,8 +53,15 @@ body {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-fade-in {
@@ -62,8 +69,15 @@ body {
 }
 
 @keyframes pulse-green {
-  0%, 100% { box-shadow: 0 0 4px var(--green); }
-  50% { box-shadow: 0 0 10px var(--green), 0 0 16px rgba(63, 185, 80, 0.4); }
+
+  0%,
+  100% {
+    box-shadow: 0 0 4px var(--green);
+  }
+
+  50% {
+    box-shadow: 0 0 10px var(--green), 0 0 16px rgba(63, 185, 80, 0.4);
+  }
 }
 
 .animate-pulse-green {

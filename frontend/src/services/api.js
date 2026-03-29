@@ -11,13 +11,13 @@ export const getStocks = async () => {
   return response.data;
 };
 
-export const getStockDetail = async (symbol) => {
-  const response = await api.get(`/stock/${symbol}`);
+export const getStockDetail = async (slug) => {
+  const response = await api.get(`/stock/${slug}`);
   return response.data;
 };
 
 export const runPrediction = async (symbol) => {
-  const response = await api.post(`/run-prediction/${symbol}`);
+  const response = await api.post(`/predict/${symbol}`);
   return response.data;
 };
 

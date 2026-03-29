@@ -13,7 +13,7 @@ const IndexPage = ({ onSelectStock }) => {
   const fetchStocks = useCallback(async (isManual = false) => {
     if (isManual) setRefreshing(true);
     else setLoading(true);
-    
+
     try {
       const data = await getStocks();
       setStocks(data);
@@ -32,7 +32,7 @@ const IndexPage = ({ onSelectStock }) => {
     }
   }, [fetchStocks]);
 
-  const filteredStocks = stocks.filter(stock => 
+  const filteredStocks = stocks.filter(stock =>
     stock.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
     stock.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -68,9 +68,9 @@ const IndexPage = ({ onSelectStock }) => {
           <h1 className="text-3xl font-black text-white tracking-tight">Market Overview</h1>
           <p className="text-gray-400 mt-1">Real-time NEPSE signals and AI forecasts</p>
         </div>
-        
+
         <div className="flex flex-1 max-w-md relative group">
-          <input 
+          <input
             type="text"
             placeholder="Search symbol or company..."
             value={searchTerm}
@@ -82,7 +82,7 @@ const IndexPage = ({ onSelectStock }) => {
           </div>
         </div>
 
-        <button 
+        <button
           onClick={() => fetchStocks(true)}
           disabled={refreshing}
           className="flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50"
@@ -95,9 +95,9 @@ const IndexPage = ({ onSelectStock }) => {
       {stocks.length === 0 ? (
         <div className="bg-gray-900 border border-gray-800 rounded-3xl p-12 text-center">
           <p className="text-gray-500 text-lg">No stocks found in database.</p>
-          <button 
-             onClick={() => fetchStocks(true)}
-             className="mt-4 text-indigo-400 hover:text-indigo-300 font-bold"
+          <button
+            onClick={() => fetchStocks(true)}
+            className="mt-4 text-indigo-400 hover:text-indigo-300 font-bold"
           >
             Try reloading the market list
           </button>
@@ -105,9 +105,9 @@ const IndexPage = ({ onSelectStock }) => {
       ) : filteredStocks.length === 0 ? (
         <div className="bg-gray-900 border border-gray-800 rounded-3xl p-12 text-center">
           <p className="text-gray-400">No results matching "{searchTerm}"</p>
-          <button 
-             onClick={() => setSearchTerm('')}
-             className="mt-2 text-indigo-400 hover:text-indigo-300 font-bold text-sm"
+          <button
+            onClick={() => setSearchTerm('')}
+            className="mt-2 text-indigo-400 hover:text-indigo-300 font-bold text-sm"
           >
             Clear search
           </button>
@@ -115,13 +115,13 @@ const IndexPage = ({ onSelectStock }) => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           {filteredStocks.map((stock) => (
-            <div 
+            <div
               key={stock.id}
               onClick={() => onSelectStock(stock.symbol)}
               className="bg-gray-900/40 border border-gray-800/80 backdrop-blur-sm rounded-2xl p-6 hover:border-indigo-500/50 hover:bg-gray-800/50 transition-all cursor-pointer group relative overflow-hidden shadow-xl"
             >
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                 <ArrowRight size={48} className="text-indigo-400 -rotate-45" />
+                <ArrowRight size={48} className="text-indigo-400 -rotate-45" />
               </div>
 
               <div className="flex justify-between items-start mb-6 relative z-10">
@@ -129,28 +129,27 @@ const IndexPage = ({ onSelectStock }) => {
                   <h3 className="text-xl font-black text-white group-hover:text-indigo-400 transition-colors uppercase tracking-tight">{stock.symbol}</h3>
                   <p className="text-[10px] text-gray-500 font-black truncate max-w-[150px] uppercase mt-0.5 tracking-wider">{stock.name}</p>
                 </div>
-                <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm ${
-                  stock.latest_signal === 'BUY' ? 'bg-green-500/10 text-green-400 border border-green-500/20' :
-                  stock.latest_signal === 'SELL' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
-                  'bg-gray-800 text-gray-400 border border-gray-700'
-                }`}>
-                  {stock.latest_signal || 'NO SIGNAL'}
+                <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm ${stock.signal === 'BUY' ? 'bg-green-500/10 text-green-400 border border-green-500/20' :
+                    stock.signal === 'SELL' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                      'bg-gray-800 text-gray-400 border border-gray-700'
+                  }`}>
+                  {stock.signal || 'NO SIGNAL'}
                 </div>
               </div>
 
               <div className="flex justify-between items-end relative z-10">
                 <div className="space-y-1">
                   <p className="text-2xl font-mono font-bold text-white tracking-tighter">
-                    {stock.latest_price ? `Rs. ${stock.latest_price.toLocaleString()}` : 'N/A'}
+                    {stock.price ? `Rs. ${stock.price.toLocaleString()}` : 'N/A'}
                   </p>
-                  <div className={`flex items-center text-[10px] font-black tracking-widest uppercase ${stock.latest_change_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {stock.latest_change_pct >= 0 ? <TrendingUp size={12} className="mr-1" /> : <TrendingDown size={12} className="mr-1" />}
-                    {Math.abs(stock.latest_change_pct).toFixed(2)}%
+                  <div className={`flex items-center text-[10px] font-black tracking-widest uppercase ${stock.trend === 'bullish' ? 'text-green-400' : stock.trend === 'bearish' ? 'text-red-400' : 'text-yellow-400'}`}>
+                    {stock.trend === 'bullish' ? <TrendingUp size={12} className="mr-1" /> : <TrendingDown size={12} className="mr-1" />}
+                    RSI {stock.rsi ? stock.rsi.toFixed(1) : '--'}
                   </div>
                 </div>
-                
+
                 <div className="flex space-x-2">
-                  <button 
+                  <button
                     onClick={(e) => { e.stopPropagation(); handleRunPredict(stock.symbol); }}
                     disabled={runningPredict === stock.symbol}
                     className="p-3 bg-gray-950 border border-gray-800 text-gray-500 rounded-xl hover:bg-indigo-600 hover:text-white hover:border-indigo-500 transition-all disabled:opacity-50 group/btn"

@@ -1,84 +1,72 @@
-from pydantic import BaseModel
-from typing import List, Optional, Any
-from datetime import date
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from datetime import date, datetime
 
-class StockBase(BaseModel):
+# --- Anomalies ---
+class AnomalyBase(BaseModel):
+    date: str
+    type: str # renamed from anomaly_type for JSON representation if needed, or mapped
+    change_pct: float
+
+class Anomaly(AnomalyBase):
+    id: int
+    prediction_id: int
+    class Config:
+        from_attributes = True
+
+# --- Scenarios ---
+class ScenarioData(BaseModel):
+    prob: float
+    target: float
+
+class Scenarios(BaseModel):
+    bull: Optional[ScenarioData] = None
+    base: Optional[ScenarioData] = None
+    bear: Optional[ScenarioData] = None
+
+# --- Forecasts ---
+class ForecastBase(BaseModel):
+    date: str
+    price: float
+    change_pct: float
+    prob_up: float
+    confidence: float
+    
+    class Config:
+        from_attributes = True
+
+# --- Trade Plan ---
+class TradePlan(BaseModel):
+    buy_zone: List[float] = Field(default_factory=list)
+    target: float
+    stop_loss: float
+    rr_ratio: float
+
+# --- Prediction Master ---
+class PredictionResponse(BaseModel):
+    symbol: str
+    predicted_close: float
+    signal: str
+    direction_prob: float
+    confidence: float
+    forecast: List[ForecastBase] = []
+    scenarios: Scenarios
+    trade_plan: TradePlan
+    risks: List[str] = []
+    anomalies: List[AnomalyBase] = []
+    ai_summary: str
+
+# --- Stock Overview (for GET /stocks) ---
+class StockOverview(BaseModel):
+    id: int
     symbol: str
     name: str
-    sector: str
-
-class StockCreate(StockBase):
-    pass
-
-class Stock(StockBase):
-    id: int
-
-    class Config:
-        from_attributes = True
-
-class PriceBase(BaseModel):
-    date: date
-    close: float
-    volume: float
-
-class Price(PriceBase):
-    id: int
-    stock_id: int
-
-    class Config:
-        from_attributes = True
-
-class PredictionBase(BaseModel):
-    date: date
     predicted_close: Optional[float] = None
+    signal: Optional[str] = None
     direction_prob: Optional[float] = None
     confidence: Optional[float] = None
-    signal: Optional[str] = None
-    # Extended forecast fields (from full_result_json)
-    change_pct: Optional[float] = None
-    date_bs: Optional[str] = None
-    day_name: Optional[str] = None
-    d_conf: Optional[float] = None
-    trap: Optional[int] = None
-
-class Prediction(PredictionBase):
-    id: int
-    stock_id: int
-
-    class Config:
-        from_attributes = True
-
-class StockWithMetrics(Stock):
-    latest_price: Optional[float] = None
-    latest_change_pct: Optional[float] = None
-    latest_signal: Optional[str] = None
-    latest_confidence: Optional[float] = None
-    week52_high: Optional[float] = None
-    week52_low: Optional[float] = None
-
-class StockDetail(StockWithMetrics):
-    # Dataset summary
-    records_count: Optional[int] = None
-    date_range_start: Optional[str] = None
-    date_range_end: Optional[str] = None
-    avg_vol_20d: Optional[float] = None
-    # Forecast
-    forecast: List[PredictionBase] = []
-    # Analytical sections
-    technical_info: Optional[dict] = None
-    trade_plan: Optional[dict] = None
-    sentiment: Optional[dict] = None
-    regime: Optional[dict] = None
-    smart_money: Optional[dict] = None
-    accuracy_metrics: Optional[dict] = None
-    top_features: Optional[List[dict]] = None
-    anomalies: Optional[List[dict]] = None
-    scenarios: Optional[List[dict]] = None
-    # Signal
-    final_signal: Optional[str] = None
-    final_confidence: Optional[float] = None
-    model_reliability: Optional[float] = None
-    signal_reason: Optional[str] = None
-    # Risk & AI
-    risk_summary: List[str] = []
-    ai_summary: Optional[str] = None
+    
+# --- For Detail Page (GET /stocks/{symbol}) ---
+# It matches the PredictionResponse practically, but wrapped just in case.
+class StockDetailResponse(PredictionResponse):
+    pass
