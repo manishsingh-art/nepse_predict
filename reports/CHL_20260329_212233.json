@@ -1,0 +1,277 @@
+{
+  "symbol": "CHL",
+  "version": "6.2 Advanced Resilience & Anomaly Integration",
+  "generated_at": "2026-03-29T21:22:33",
+  "last_close": 307.0,
+  "last_date": "2026-03-29",
+  "regime": {
+    "regime": "SIDEWAYS",
+    "confidence": 0.5,
+    "color": "yellow",
+    "volatility_pct": 3.86,
+    "vol_ratio": 1.14,
+    "trap_score": 0
+  },
+  "smart_money": {
+    "regime": "RETAIL",
+    "buy_concentration": 0,
+    "sell_concentration": 0,
+    "trap_score": 0
+  },
+  "strategy": {
+    "action": "SELL / REDUCE",
+    "entry": 307.0,
+    "stop_loss": 327.51,
+    "take_profit": 272.82,
+    "risk_reward_ratio": -1.67,
+    "suggested_size_weight": 0.53,
+    "regime_context": "SIDEWAYS",
+    "sm_context": "RETAIL",
+    "trap_index": 0,
+    "atr_used": 13.67,
+    "reason": "P(up)=0.24 | Conf=0.51 | Regime: SIDEWAYS"
+  },
+  "trend": {
+    "trend": "BULLISH \ud83d\udcc8",
+    "score": 4,
+    "price_change_pct_20d": 14.13,
+    "volatility_pct": 4.45,
+    "volatility_label": "HIGH \ud83d\udd25",
+    "atr": 13.671,
+    "rsi": 59.3,
+    "rsi_label": "NEUTRAL",
+    "macd_bullish": "False",
+    "bb_position_pct": 52.1,
+    "recent_5d_momentum": -2.8,
+    "last_close": 307.0,
+    "last_date": "2026-03-29 00:00:00",
+    "support": 268.0,
+    "resistance": 332.5,
+    "cci": 26.6,
+    "williams_r": -69.1,
+    "stoch_k": 30.9,
+    "stoch_d": 60.9,
+    "obv_trend": "Falling",
+    "vol_ratio": 1.14
+  },
+  "sentiment": {
+    "score": -0.5,
+    "reason": "Keyword basic scoring",
+    "category": "General"
+  },
+  "forecast": [
+    {
+      "day": 1,
+      "date": "2026-03-30",
+      "predicted_close": 287.82,
+      "direction_prob": 0.243,
+      "low_band": 271.16,
+      "high_band": 304.48,
+      "change_pct": -10.0,
+      "confidence": "high",
+      "direction_confidence": 0.51,
+      "trap_score": 0,
+      "scenario_bull": 307.82,
+      "scenario_bear": 267.82,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Monday"
+    },
+    {
+      "day": 2,
+      "date": "2026-03-31",
+      "predicted_close": 296.71,
+      "direction_prob": 0.581,
+      "low_band": 277.44,
+      "high_band": 315.98,
+      "change_pct": 3.09,
+      "confidence": "medium",
+      "direction_confidence": 0.16,
+      "trap_score": 0,
+      "scenario_bull": 319.83,
+      "scenario_bear": 273.58,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Tuesday"
+    },
+    {
+      "day": 3,
+      "date": "2026-04-02",
+      "predicted_close": 278.77,
+      "direction_prob": 0.584,
+      "low_band": 261.0,
+      "high_band": 296.54,
+      "change_pct": -6.05,
+      "confidence": "medium",
+      "direction_confidence": 0.17,
+      "trap_score": 0,
+      "scenario_bull": 300.1,
+      "scenario_bear": 257.44,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Thursday"
+    },
+    {
+      "day": 4,
+      "date": "2026-04-05",
+      "predicted_close": 250.89,
+      "direction_prob": 0.152,
+      "low_band": 233.02,
+      "high_band": 268.77,
+      "change_pct": -10.0,
+      "confidence": "high",
+      "direction_confidence": 0.7,
+      "trap_score": 0,
+      "scenario_bull": 272.34,
+      "scenario_bear": 229.44,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Sunday"
+    },
+    {
+      "day": 5,
+      "date": "2026-04-06",
+      "predicted_close": 225.8,
+      "direction_prob": 0.244,
+      "low_band": 206.33,
+      "high_band": 245.28,
+      "change_pct": -10.0,
+      "confidence": "high",
+      "direction_confidence": 0.51,
+      "trap_score": 0,
+      "scenario_bull": 249.17,
+      "scenario_bear": 202.43,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Monday"
+    },
+    {
+      "day": 6,
+      "date": "2026-04-07",
+      "predicted_close": 211.32,
+      "direction_prob": 0.389,
+      "low_band": 189.83,
+      "high_band": 232.82,
+      "change_pct": -6.41,
+      "confidence": "medium",
+      "direction_confidence": 0.22,
+      "trap_score": 0,
+      "scenario_bull": 237.11,
+      "scenario_bear": 185.53,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Tuesday"
+    },
+    {
+      "day": 7,
+      "date": "2026-04-08",
+      "predicted_close": 191.51,
+      "direction_prob": 0.253,
+      "low_band": 170.25,
+      "high_band": 212.76,
+      "change_pct": -9.38,
+      "confidence": "high",
+      "direction_confidence": 0.49,
+      "trap_score": 0,
+      "scenario_bull": 217.02,
+      "scenario_bear": 166.0,
+      "is_trading_day": true,
+      "holiday_name": null,
+      "day_name": "Wednesday"
+    }
+  ],
+  "anomalies": [
+    {
+      "date": "2025-05-18",
+      "close": 318.0,
+      "change_pct": 9.99,
+      "z_score": 4.09,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    },
+    {
+      "date": "2025-06-08",
+      "close": 300.44,
+      "change_pct": 8.01,
+      "z_score": 3.27,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    },
+    {
+      "date": "2025-06-15",
+      "close": 324.8,
+      "change_pct": 9.99,
+      "z_score": 4.09,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    },
+    {
+      "date": "2025-06-25",
+      "close": 326.49,
+      "change_pct": 6.3,
+      "z_score": 2.56,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    },
+    {
+      "date": "2025-08-31",
+      "close": 265.18,
+      "change_pct": -7.07,
+      "z_score": -2.99,
+      "label": "\ud83d\udd3b CRASH",
+      "cause": null
+    },
+    {
+      "date": "2025-09-03",
+      "close": 243.49,
+      "change_pct": -6.45,
+      "z_score": -2.73,
+      "label": "\ud83d\udd3b CRASH",
+      "cause": null
+    },
+    {
+      "date": "2025-09-23",
+      "close": 263.9,
+      "change_pct": 9.5,
+      "z_score": 3.89,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    },
+    {
+      "date": "2025-10-07",
+      "close": 255.0,
+      "change_pct": -6.59,
+      "z_score": -2.79,
+      "label": "\ud83d\udd3b CRASH",
+      "cause": null
+    },
+    {
+      "date": "2025-11-23",
+      "close": 277.0,
+      "change_pct": 6.29,
+      "z_score": 2.56,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    },
+    {
+      "date": "2026-02-05",
+      "close": 298.0,
+      "change_pct": 6.43,
+      "z_score": 2.61,
+      "label": "\ud83d\udd3a SPIKE",
+      "cause": null
+    }
+  ],
+  "ml_metrics": {
+    "avg_mae": 21.916,
+    "avg_dir_acc": 58.59,
+    "avg_mape": 7.276,
+    "models_used": [
+      "lgb",
+      "xgb",
+      "gbm",
+      "rf",
+      "ridge"
+    ]
+  }
+}
