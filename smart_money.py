@@ -46,6 +46,13 @@ class SmartMoneyAnalyst:
             # 1. Concentration Analysis
             buyers = df.groupby("buyer_broker")["quantity"].sum().sort_values(ascending=False)
             sellers = df.groupby("seller_broker")["quantity"].sum().sort_values(ascending=False)
+
+            # Broker net flow (buy_qty - sell_qty per broker)
+            flow = buyers.subtract(sellers, fill_value=0.0).sort_values(ascending=False)
+            net_flow_top10 = float(flow.head(10).sum())
+            net_flow_top10_norm = float(net_flow_top10 / (total_vol + 1e-9))
+            broker_concentration = float(top5_buy_share - top5_sell_share)
+            accumulation_flag = float(top5_buy_share > 0.40 and net_flow_top10_norm > 0)
             
             buy_hhi = self.calculate_broker_hhi(buyers)
             sell_hhi = self.calculate_broker_hhi(sellers)
@@ -93,6 +100,9 @@ class SmartMoneyAnalyst:
                 "sell_hhi": round(sell_hhi, 1),
                 "buy_concentration": round(top5_buy_share, 3),
                 "sell_concentration": round(top5_sell_share, 3),
+                "broker_concentration": round(broker_concentration, 3),
+                "smart_money_flow": round(net_flow_top10_norm, 4),
+                "accumulation_flag": accumulation_flag,
                 "large_trade_participation": round(large_trade_ratio, 3),
                 "wash_trading_alert": wash_signal,
                 "hidden_accumulation": hidden_accumulation,

@@ -9,7 +9,7 @@ Usage:
     python run_all.py                        # all symbols, max 10 workers
     python run_all.py --symbols NABIL NTC    # specific symbols
     python run_all.py --workers 5            # control concurrency
-    python run_all.py --no-ml               # statistical only (fast)
+    python run_all.py --no-ml               # deprecated flag (ignored)
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def process_symbol(sym: str, log_data: dict, use_ml: bool = True) -> tuple:
     try:
         with suppress_output():
             from fetcher import fetch_history
-            from analyze import predict_prices
+            from pipeline import train_model
 
             df = fetch_history(sym, years=2)
             if df is None or df.empty or len(df) < 20:
@@ -85,11 +85,19 @@ def process_symbol(sym: str, log_data: dict, use_ml: bool = True) -> tuple:
 
         # Backfill today if not present
         has_today = any(e.get("date") == today_str for e in history)
-        if not has_today and latest_date == today_str and len(df) > 20:
+        if not has_today and latest_date == today_str and len(df) > 100:
             with suppress_output():
                 try:
-                    bt_pred = predict_prices(df.iloc[:-1].copy(), 1)[0]
-                    bt_p = float(bt_pred["predicted_close"])
+                    hist_market = fetch_history("NEPSE", years=2) if sym.upper() != "NEPSE" else None
+                    hist_model, hist_clean, _, hist_cols = train_model(
+                        data=df.iloc[:-1].copy(),
+                        symbol=sym,
+                        market_data=hist_market,
+                        optimise=False,
+                        n_folds=min(5, max(3, len(df.iloc[:-1]) // 180)),
+                    )
+                    bt_pred = hist_model.forecast(hist_clean, hist_cols, horizon=1)[0]
+                    bt_p = float(bt_pred.predicted_close)
                     history.append({
                         "date": today_str,
                         "predicted_close": round(bt_p, 2),
@@ -102,28 +110,21 @@ def process_symbol(sym: str, log_data: dict, use_ml: bool = True) -> tuple:
         # Forecast next day
         with suppress_output():
             try:
-                if use_ml and len(df) >= 120:
-                    from features import build_features, add_targets, get_feature_cols
-                    from models import NEPSEEnsemble
-                    feat_df = build_features(df.copy())
-                    feat_df = add_targets(feat_df)
-                    feature_cols = get_feature_cols(feat_df)
-                    ensemble = NEPSEEnsemble(symbol=sym, n_folds=3, optimise=False)
-                    ensemble.fit(feat_df, feature_cols)
-                    ml_preds = ensemble.forecast(df, feature_cols, horizon=1)
-                    next_p = ml_preds[0].predicted_close
-                    next_date = ml_preds[0].date
-                else:
-                    stat_preds = predict_prices(df, 1)
-                    next_p = float(stat_preds[0]["predicted_close"])
-                    next_date = stat_preds[0]["date"]
-            except Exception:
-                try:
-                    stat_preds = predict_prices(df, 1)
-                    next_p = float(stat_preds[0]["predicted_close"])
-                    next_date = stat_preds[0]["date"]
-                except Exception:
+                if len(df) < 120:
                     return sym, None
+                market_df = fetch_history("NEPSE", years=2) if sym.upper() != "NEPSE" else None
+                model, clean_df, _, feature_cols = train_model(
+                    data=df,
+                    symbol=sym,
+                    market_data=market_df,
+                    optimise=False,
+                    n_folds=3,
+                )
+                next_forecast = model.forecast(clean_df, feature_cols, horizon=1)[0]
+                next_p = float(next_forecast.predicted_close)
+                next_date = next_forecast.date
+            except Exception:
+                return sym, None
 
         # Append if not duplicate
         has_next = any(e.get("date") == next_date for e in history)
@@ -149,28 +150,27 @@ def main():
     ap = argparse.ArgumentParser(description="Batch NEPSE predictor")
     ap.add_argument("--symbols", nargs="+", help="Specific symbols to process")
     ap.add_argument("--workers", type=int, default=8, help="Thread pool size (default 8)")
-    ap.add_argument("--no-ml",  action="store_true", help="Statistical only (faster)")
+    ap.add_argument("--no-ml",  action="store_true", help="Deprecated; the batch runner is ML-only now")
     args = ap.parse_args()
 
     final_output: dict = {}
     t0 = time.time()
 
-    # Load company list
+    # Load symbols live (cached 24h)
     with suppress_output():
-        from fetcher import fetch_company_list
-        companies = fetch_company_list()
+        from fetcher import fetch_nepse_symbols
+        syms_map = fetch_nepse_symbols()
 
-    if companies is None or companies.empty:
+    symbols = args.symbols if args.symbols else list(syms_map.keys())
+    symbols = [s.upper() for s in symbols if s]
+    if not symbols:
         print("{}")
         return
-
-    symbols = args.symbols if args.symbols else companies["symbol"].astype(str).tolist()
-    symbols = [s.upper() for s in symbols if s]
 
     with suppress_output():
         log_data = load_latest_log()
 
-    use_ml = not args.no_ml
+    use_ml = True
 
     # Parallel processing
     with suppress_output():

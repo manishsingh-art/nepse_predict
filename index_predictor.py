@@ -19,7 +19,7 @@ from typing import List, Optional
 sys.path.append(os.getcwd())
 
 from fetcher import fetch_history, get_aggregate_sentiment
-from features import build_features, add_targets, get_feature_cols
+from pipeline import prepare_pipeline_frame
 from models import NEPSEEnsemble
 from sector_analysis import get_sector_mapping
 
@@ -87,28 +87,19 @@ def run_index_prediction(horizon: int = 7):
     sec_feats = get_top_sector_features(df['date'])
     df = pd.concat([df, sec_feats], axis=1)
     
-    # 4. Build Standard Features
-    logger.info("Engineering technical indicators...")
-    df_feat = build_features(df, sentiment_score=market_sentiment)
-    df_feat = add_targets(df_feat)
-    
-    # Add index-specific features (e.g. cumulative sector impact)
+    # 4. Train Ensemble with the shared pipeline
+    clean_df, df_feat, feature_cols = prepare_pipeline_frame(df)
     sec_cols = [c for c in df_feat.columns if c.startswith("sec_") and c.endswith("_ret")]
     if sec_cols:
         df_feat["avg_sector_ret"] = df_feat[sec_cols].mean(axis=1)
-    
-    feature_cols = get_feature_cols(df_feat)
-    if "avg_sector_ret" in df_feat.columns:
         feature_cols.append("avg_sector_ret")
-    
-    # 5. Train Ensemble
     logger.info(f"Training NEPSE Index Ensemble (rows={len(df_feat)})...")
     ensemble = NEPSEEnsemble(symbol="NEPSE", n_folds=5, optimise=True)
     ensemble.fit(df_feat, feature_cols)
     
-    # 6. Forecast
+    # 5. Forecast
     logger.info(f"Generating {horizon}-day forecast...")
-    forecast = ensemble.forecast(df, feature_cols, horizon=horizon, sentiment_score=market_sentiment)
+    forecast = ensemble.forecast(clean_df, feature_cols, horizon=horizon)
     
     # 7. Output Results
     print("\n--- NEPSE Index Forecast ---")

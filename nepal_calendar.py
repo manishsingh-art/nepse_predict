@@ -297,8 +297,8 @@ _BANDH_KEYWORDS = [
 _BANDH_CACHE_FILE = Path.home() / ".nepse_cache" / "bandh_dates.json"
 
 
-def _load_bandh_cache() -> Dict[str, bool]:
-    """Load cached bandh dates from disk."""
+def _load_bandh_cache() -> Dict[str, object]:
+    """Load cached bandh signals from disk."""
     try:
         if _BANDH_CACHE_FILE.exists():
             age = time.time() - _BANDH_CACHE_FILE.stat().st_mtime
@@ -309,7 +309,7 @@ def _load_bandh_cache() -> Dict[str, bool]:
     return {}
 
 
-def _save_bandh_cache(data: Dict[str, bool]) -> None:
+def _save_bandh_cache(data: Dict[str, object]) -> None:
     try:
         _BANDH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _BANDH_CACHE_FILE.write_text(json.dumps(data))
@@ -317,31 +317,47 @@ def _save_bandh_cache(data: Dict[str, bool]) -> None:
         pass
 
 
-def detect_bandh_from_news(target_date: date, fetch_live: bool = True) -> bool:
+def detect_bandh_signal_from_news(target_date: date, fetch_live: bool = True) -> Dict[str, object]:
     """
-    Check if a Nepal Bandh is active on `target_date` by scanning news RSS feeds.
-    Returns True if a bandh is detected for that date.
-    Falls back to False if no network.
+    Scored bandh detection with uncertainty handling.
+
+    Returns:
+      {
+        "is_bandh": bool,               # only True when confidence is high
+        "uncertain": bool,              # True when signal exists but below threshold
+        "score": float,                 # aggregate score
+        "hits": int,                    # number of matched headlines
+        "sources": list[str],           # sources that contributed
+      }
     """
     cache = _load_bandh_cache()
     date_str = target_date.isoformat()
     if date_str in cache:
-        return cache[date_str]
+        v = cache[date_str]
+        # Backward compatibility: old cache stored bool
+        if isinstance(v, bool):
+            return {"is_bandh": v, "uncertain": False, "score": 0.0, "hits": 0, "sources": ["cache_legacy"]}
+        if isinstance(v, dict):
+            return v
+        return {"is_bandh": False, "uncertain": False, "score": 0.0, "hits": 0, "sources": ["cache_unknown"]}
 
     if not fetch_live:
-        return False
+        return {"is_bandh": False, "uncertain": False, "score": 0.0, "hits": 0, "sources": ["offline"]}
 
     RSS_FEEDS = [
-        "https://thehimalayantimes.com/feed/",
-        "https://english.onlinekhabar.com/feed",
-        "https://myrepublica.nagariknetwork.com/feed/",
-        "https://kathmandupost.com/rss",
+        ("https://thehimalayantimes.com/feed/", 1.0, "THT"),
+        ("https://kathmandupost.com/rss", 1.0, "KathmanduPost"),
+        ("https://myrepublica.nagariknetwork.com/feed/", 0.8, "Republica"),
+        ("https://english.onlinekhabar.com/feed", 0.7, "OnlineKhabar"),
     ]
 
-    target_str = target_date.strftime("%Y-%m-%d")
-    found_bandh = False
+    # Conservative evidence scoring to avoid false "CLOSED" flags.
+    # Only mark CLOSED if strong evidence: score >= 3.
+    score = 0
+    hits = 0
+    sources_hit: set[str] = set()
 
-    for feed_url in RSS_FEEDS:
+    for feed_url, w, label in RSS_FEEDS:
         try:
             import requests
             r = requests.get(feed_url, timeout=8,
@@ -356,28 +372,59 @@ def detect_bandh_from_news(target_date: date, fetch_live: bool = True) -> bool:
                     continue
                 title_text = title.group(1).lower()
                 pub_text = pub.group(1)
-                # Match keywords
-                if any(kw in title_text for kw in _BANDH_KEYWORDS):
-                    # Check if pub date is within ±2 days of target
-                    for fmt in ["%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z"]:
-                        try:
-                            from datetime import datetime
-                            pub_dt = datetime.strptime(pub_text.strip(), fmt).date()
-                            if abs((pub_dt - target_date).days) <= 2:
-                                found_bandh = True
-                                break
-                        except Exception:
-                            continue
-                if found_bandh:
-                    break
-            if found_bandh:
-                break
+                # Evidence scoring rules (as requested):
+                # - "bandh" or "strike" => +2
+                # - "nationwide"       => +2
+                # - "transport closed" => +1
+                s = 0
+                if ("bandh" in title_text) or ("strike" in title_text) or ("banda" in title_text):
+                    s += 2
+                if "nationwide" in title_text:
+                    s += 2
+                if "transport closed" in title_text:
+                    s += 1
+                if s <= 0:
+                    continue
+
+                # Only count if pub date is within ±2 days of target
+                ok = False
+                for fmt in ["%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z"]:
+                    try:
+                        from datetime import datetime
+                        pub_dt = datetime.strptime(pub_text.strip(), fmt).date()
+                        if abs((pub_dt - target_date).days) <= 2:
+                            ok = True
+                            break
+                    except Exception:
+                        continue
+                if not ok:
+                    continue
+
+                hits += 1
+                sources_hit.add(label)
+                # Be conservative: take the strongest headline as the day's evidence.
+                score = max(int(score), int(s))
         except Exception:
             continue
 
-    cache[date_str] = found_bandh
+    is_bandh = (int(score) >= 3) and (hits >= 1)
+    uncertain = (not is_bandh) and (int(score) > 0) and (hits >= 1)
+
+    payload = {
+        "is_bandh": bool(is_bandh),
+        "uncertain": bool(uncertain),
+        "score": int(score),
+        "hits": int(hits),
+        "sources": sorted(list(sources_hit)),
+    }
+    cache[date_str] = payload
     _save_bandh_cache(cache)
-    return found_bandh
+    return payload
+
+
+def detect_bandh_from_news(target_date: date, fetch_live: bool = True) -> bool:
+    """Backward-compatible boolean bandh detection."""
+    return bool(detect_bandh_signal_from_news(target_date, fetch_live=fetch_live).get("is_bandh", False))
 
 
 # ─── Calendar Engine ──────────────────────────────────────────────────────────
@@ -407,7 +454,7 @@ class NepalMarketCalendar:
     def __init__(self, fetch_live: bool = True):
         self.fetch_live = fetch_live
         self._holiday_set = _HOLIDAY_SET
-        self._bandh_cache: Dict[str, bool] = _load_bandh_cache()
+        self._bandh_cache: Dict[str, object] = _load_bandh_cache()
 
     def is_weekend(self, d: date) -> bool:
         """True if Friday or Saturday (NEPSE weekend)."""
@@ -419,7 +466,11 @@ class NepalMarketCalendar:
 
     def is_bandh(self, d: date) -> bool:
         """True if a Nepal Bandh is active on d."""
-        return detect_bandh_from_news(d, fetch_live=self.fetch_live)
+        return bool(detect_bandh_signal_from_news(d, fetch_live=self.fetch_live).get("is_bandh", False))
+
+    def bandh_status(self, d: date) -> Dict[str, object]:
+        """Return scored bandh status (includes uncertainty flag)."""
+        return detect_bandh_signal_from_news(d, fetch_live=self.fetch_live)
 
     def is_trading_day(self, d: date) -> bool:
         """Full trading day check: not weekend, not holiday, not bandh."""

@@ -12,6 +12,7 @@ Nepal-aware features:
   - Uses NEPSE circuit-breaker (±10% per session)
 
 Training:
+  - Primary target: next-session close-to-close return
   - Purged walk-forward cross-validation (no look-ahead bias)
   - Embargo gap between train/validation folds
   - Optuna hyperparameter optimisation when available
@@ -41,6 +42,15 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 
 logger = logging.getLogger(__name__)
+
+# Fixed ensemble weights (requested)
+ENSEMBLE_WEIGHTS: Dict[str, float] = {
+    "lgb": 0.30,
+    "xgb": 0.25,
+    "gbm": 0.20,
+    "rf": 0.15,
+    "ridge": 0.10,
+}
 
 # ── Optional ML library imports ───────────────────────────────────────────────
 try:
@@ -77,6 +87,23 @@ except ImportError:
     HAS_NEPAL_CAL = False
     _NEPAL_CAL = None
 
+# ── Authoritative NEPSE calendar facade (preferred) ───────────────────────────
+try:
+    from nepse_market_calendar import get_market_calendar
+
+    _MKT_CAL = get_market_calendar()
+    HAS_MKT_CAL = True
+except Exception:
+    _MKT_CAL = None
+    HAS_MKT_CAL = False
+
+try:
+    from nepse_market_calendar import validate_trading_date_alignment
+    from nepse_date_utils import validate_ad_bs_mapping
+    HAS_DATE_VALIDATION = True
+except Exception:
+    HAS_DATE_VALIDATION = False
+
 MODEL_CACHE_DIR = Path(os.path.expanduser("~")) / ".nepse_cache" / "models"
 
 
@@ -90,20 +117,21 @@ class FoldResult:
     mae: float
     rmse: float
     dir_acc: float
-    mape: float
+    sharpe: float
 
 
 @dataclass
 class ModelReport:
     symbol: str
     trained_at: str
+    target_name: str
     n_rows: int
     n_features: int
     cv_folds: List[FoldResult]
     avg_mae: float
     avg_rmse: float
     avg_dir_acc: float
-    avg_mape: float
+    avg_sharpe: float
     models_used: List[str] = field(default_factory=list)
     feature_importance: Dict[str, float] = field(default_factory=dict)
     best_params: Dict[str, Any] = field(default_factory=dict)
@@ -114,6 +142,7 @@ class ForecastPoint:
     day: int
     date: str
     predicted_close: float
+    predicted_return: float
     direction_prob: float
     low_band: float
     high_band: float
@@ -147,6 +176,23 @@ def _impute(X: pd.DataFrame) -> np.ndarray:
 def _clip_circuit(price: float, prev_price: float) -> float:
     """Enforce NEPSE ±10% circuit-breaker rule."""
     return float(np.clip(price, prev_price * 0.90, prev_price * 1.10))
+
+
+def ensemble_predict(models: Dict[str, Any], X) -> np.ndarray:
+    blended, total_w = None, 0.0
+    for name, m in models.items():
+        try:
+            arr = np.asarray(m.predict(X))
+        except Exception:
+            continue
+        w = float(ENSEMBLE_WEIGHTS.get(str(name), 0.0))
+        if w <= 0:
+            continue
+        blended = arr * w if blended is None else blended + arr * w
+        total_w += w
+    if blended is None or total_w <= 0:
+        raise RuntimeError("All models failed")
+    return blended / total_w
 
 
 def _apply_realism_constraints(price: float, prev_price: float, feats: Dict[str, Any], history: Optional[pd.DataFrame] = None) -> float:
@@ -188,10 +234,24 @@ def _apply_realism_constraints(price: float, prev_price: float, feats: Dict[str,
     return new_price
 
 
-def directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray, prev: np.ndarray) -> float:
-    true_dir = (y_true > prev).astype(int)
-    pred_dir = (y_pred > prev).astype(int)
+def directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    true_dir = (np.asarray(y_true) > 0).astype(int)
+    pred_dir = (np.asarray(y_pred) > 0).astype(int)
     return float(accuracy_score(true_dir, pred_dir)) * 100
+
+
+def strategy_sharpe(y_true_ret: np.ndarray, y_pred_ret: np.ndarray) -> float:
+    """
+    Long/flat Sharpe estimate aligned to the trading objective.
+    """
+    positions = (np.asarray(y_pred_ret) > 0).astype(float)
+    strat_rets = positions * np.asarray(y_true_ret, dtype=float)
+    if len(strat_rets) < 2:
+        return 0.0
+    sigma = float(np.std(strat_rets))
+    if sigma <= 1e-12:
+        return 0.0
+    return float(np.sqrt(252.0) * np.mean(strat_rets) / sigma)
 
 
 def mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -298,13 +358,15 @@ class NEPSEEnsemble:
         n_folds: int = 5,
         optimise: bool = True,
         n_opt_trials: int = 30,
-        optimize_for: str = "sharpe" # "mae" or "sharpe"
+        optimize_for: str = "sharpe",  # "mae" or "sharpe"
+        random_state: int = 42,
     ):
         self.symbol = symbol
         self.n_folds = n_folds
         self.optimise = optimise
         self.n_opt_trials = n_opt_trials
         self.optimize_for = optimize_for
+        self.random_state = int(random_state)
 
         self.base_models_: Dict[str, Any] = {}
         self.meta_models_: Dict[str, Any] = {} # Regime -> Ridge
@@ -323,9 +385,10 @@ class NEPSEEnsemble:
     # ── Fit ──────────────────────────────────────────────────────────────────
 
     def fit(self, df_feat: pd.DataFrame, feature_cols: List[str]) -> "NEPSEEnsemble":
-        df = df_feat.dropna(subset=["target_next_close", "close"]).copy().reset_index(drop=True)
+        target_col = "target_ret_1d"
+        df = df_feat.dropna(subset=[target_col, "close"]).copy().reset_index(drop=True)
         X_all  = df[feature_cols].astype(float)
-        y_all  = df["target_next_close"].astype(float)
+        y_all  = df[target_col].astype(float)
         prev_all = df["close"].astype(float)
 
         self.feature_cols_ = feature_cols
@@ -365,7 +428,6 @@ class NEPSEEnsemble:
             ytr     = y_all.iloc[tr_idx].values
             Xvl_raw = X_all.iloc[vl_idx]
             yvl     = y_all.iloc[vl_idx].values
-            prev_vl = prev_all.iloc[vl_idx].values
 
             fold_imp = SimpleImputer(strategy="median", keep_empty_features=True).fit(Xtr_raw)
             Xtr_imp  = fold_imp.transform(Xtr_raw)
@@ -410,13 +472,14 @@ class NEPSEEnsemble:
             blend     = self._blend(fold_preds, Xvl_raw)
             fold_mae  = mean_absolute_error(yvl, blend)
             fold_rmse = float(np.sqrt(mean_squared_error(yvl, blend)))
-            fold_da   = directional_accuracy(yvl, blend, prev_vl)
-            fold_mape_v = mape(yvl, blend)
+            fold_da   = directional_accuracy(yvl, blend)
+            fold_sharpe = strategy_sharpe(yvl, blend)
 
             fold_results.append(FoldResult(
                 fold=fold_i + 1, n_train=len(tr_idx), n_valid=len(vl_idx),
-                mae=round(fold_mae, 3), rmse=round(fold_rmse, 3),
-                dir_acc=round(fold_da, 2), mape=round(fold_mape_v, 3),
+                mae=round(fold_mae * 100.0, 3),
+                rmse=round(fold_rmse * 100.0, 3),
+                dir_acc=round(fold_da, 2), sharpe=round(fold_sharpe, 3),
             ))
 
         # Meta-learner on OOF (Regime-Aware v6.0)
@@ -482,7 +545,7 @@ class NEPSEEnsemble:
                     self._models_used.remove(name)
 
         # Direction classifier
-        y_dir = (y_all.values > prev_all.values).astype(int)
+        y_dir = (y_all.values > 0).astype(int)
         if HAS_LGB:
             dc = lgb.LGBMClassifier(n_estimators=200, learning_rate=0.05, num_leaves=31, random_state=42, verbose=-1)
             dc.fit(X_imp, y_dir)
@@ -496,12 +559,13 @@ class NEPSEEnsemble:
         self.report_ = ModelReport(
             symbol=self.symbol,
             trained_at=datetime.now().isoformat(timespec="seconds"),
+            target_name=target_col,
             n_rows=n, n_features=len(feature_cols),
             cv_folds=fold_results,
             avg_mae=round(float(np.mean([f.mae for f in fold_results])), 3),
             avg_rmse=round(float(np.mean([f.rmse for f in fold_results])), 3),
             avg_dir_acc=round(float(np.mean([f.dir_acc for f in fold_results])), 2),
-            avg_mape=round(float(np.mean([f.mape for f in fold_results])), 3),
+            avg_sharpe=round(float(np.mean([f.sharpe for f in fold_results])), 3),
             feature_importance=self._get_feature_importance(feature_cols),
             best_params=self.lgb_params_,
             models_used=self._models_used,
@@ -511,13 +575,15 @@ class NEPSEEnsemble:
     # ── Predict ───────────────────────────────────────────────────────────────
 
     def predict_one(self, X_row: pd.DataFrame, regime: Optional[str] = None) -> Tuple[float, float]:
-        """Returns (predicted_close, direction_prob)."""
+        """Returns (predicted_return, direction_prob)."""
         X_raw = X_row[self.feature_cols_]
         X_imp = self._lgb_imputer.transform(X_raw)
 
         base_preds: Dict[str, float] = {}
         for name, (mode, model) in self.base_models_.items():
             try:
+                if model is self:
+                    continue
                 if mode == "imp":
                     X_in = X_imp
                     if self._tree_feature_weights_ is not None:
@@ -527,7 +593,8 @@ class NEPSEEnsemble:
                     base_preds[name] = float(model.predict(X_raw)[0])
             except: pass
 
-        if not base_preds: return self.last_close_, 0.5
+        if not base_preds:
+            return 0.0, 0.5
 
         # Regime-Aware Stacking
         keys = [k for k in ["lgb", "xgb", "gbm", "rf", "ridge"] if k in base_preds]
@@ -559,44 +626,65 @@ class NEPSEEnsemble:
                 else:
                     dir_prob = float(dc.predict_proba(X_raw)[0][1])
             except: pass
-        
+
         return final_pred, dir_prob
 
-    def compute_final_signal(
-        self, 
-        model_prob: float, 
-        trend_score: float, 
-        sentiment_score: float, 
-        momentum_score: float, 
-        volume_score: float
-    ) -> Tuple[str, float]:
+    def predict_next_session(
+        self,
+        X_row: pd.DataFrame,
+        prev_price: float,
+        history: Optional[pd.DataFrame] = None,
+        next_date: Optional[date] = None,
+        regime_info: Optional[Dict[str, Any]] = None,
+    ) -> ForecastPoint:
         """
-        Unified Decision Engine (v5.0 Upgrade).
-        Returns (SIGNAL, confidence_score).
+        Predict one next-session move from a single feature row using the same
+        price-construction and realism constraints used in live forecasting.
         """
-        # Normalize trend_score from [-6, +6] to [0, 1]
-        t_normalized = (trend_score + 6) / 12.0
-        # Normalize sentiment from [-1, +1] to [0, 1]
-        s_normalized = (sentiment_score + 1) / 2.0
-        # Normalize momentum (approximate) - assume -5% to +5% range
-        m_normalized = np.clip((momentum_score + 5) / 10.0, 0, 1)
-        # Normalize volume ratio (1.0 is neutral)
-        v_normalized = np.clip(volume_score / 2.0, 0, 1)
+        regime_key = None
+        if regime_info:
+            regime_key = regime_info.get("regime")
+        elif "regime" in X_row.columns:
+            regime_key = str(X_row["regime"].iloc[0])
 
-        score = (
-            0.35 * model_prob +
-            0.25 * t_normalized +
-            0.15 * s_normalized +
-            0.15 * m_normalized +
-            0.10 * v_normalized
+        raw_ret, dir_prob = self.predict_one(X_row, regime_key)
+        raw_price = float(prev_price) * (1.0 + float(raw_ret))
+
+        feats_dict = X_row.iloc[0].to_dict()
+        constrained_pred = _apply_realism_constraints(raw_price, float(prev_price), feats_dict, history)
+        capped_pred = _clip_circuit(constrained_pred, float(prev_price))
+        final_ret = (capped_pred / (float(prev_price) + 1e-9)) - 1.0
+
+        vol_pct = 0.02
+        if regime_info:
+            vol_pct = float(regime_info.get("volatility_pct", 2.0)) / 100.0
+        band = capped_pred * vol_pct * 1.5
+        conf_dist = abs(float(dir_prob) - 0.5)
+        confidence = "high" if conf_dist > 0.15 else "medium" if conf_dist > 0.07 else "low"
+
+        day_name = next_date.strftime("%A") if next_date else None
+        holiday_name = None
+        if next_date and HAS_NEPAL_CAL and _NEPAL_CAL is not None:
+            holiday_name = _NEPAL_CAL.get_holiday_name(next_date)
+
+        return ForecastPoint(
+            day=1,
+            date=next_date.strftime("%Y-%m-%d") if next_date else "",
+            predicted_close=round(capped_pred, 2),
+            predicted_return=round(final_ret, 6),
+            direction_prob=round(float(dir_prob), 3),
+            low_band=round(capped_pred - band, 2),
+            high_band=round(capped_pred + band, 2),
+            change_pct=round(final_ret * 100.0, 2),
+            confidence=confidence,
+            direction_confidence=round(conf_dist * 2, 2),
+            trap_score=int((regime_info or {}).get("trap_score", 0)),
+            scenario_bull=round(capped_pred + (band * 1.2), 2),
+            scenario_bear=round(capped_pred - (band * 1.2), 2),
+            is_trading_day=True,
+            holiday_name=holiday_name,
+            day_name=day_name,
         )
-
-        if score > 0.6:
-            return "BUY", score
-        elif score < 0.4:
-            return "SELL", score
-        else:
-            return "HOLD", score
 
     def forecast(
         self,
@@ -615,11 +703,22 @@ class NEPSEEnsemble:
         last_date_ts = df_work["date"].iloc[-1]
         last_date = last_date_ts.date() if hasattr(last_date_ts, "date") else last_date_ts
 
-        if HAS_NEPAL_CAL and _NEPAL_CAL is not None:
+        if HAS_MKT_CAL and _MKT_CAL is not None:
+            forecast_dates = _MKT_CAL.next_n_trading_days(last_date, horizon)
+        elif HAS_NEPAL_CAL and _NEPAL_CAL is not None:
             forecast_dates = next_nepse_trading_dates(last_date, horizon)
         else:
             from pandas.tseries.offsets import BDay
             forecast_dates = [(last_date_ts + BDay(i + 1)).date() for i in range(horizon)]
+
+        # Validation: forecast dates must be trading dates and BS conversion must roundtrip
+        if HAS_DATE_VALIDATION:
+            try:
+                validate_trading_date_alignment(forecast_dates)
+                for d in forecast_dates:
+                    validate_ad_bs_mapping(d)
+            except Exception as ve:
+                logger.warning("Forecast date validation warning: %s", ve)
 
         predictions: List[ForecastPoint] = []
         prev_price = self.last_close_
@@ -638,28 +737,57 @@ class NEPSEEnsemble:
             avail_cols = [c for c in feature_cols if c in last_row.columns]
             X_pred[avail_cols] = last_row[avail_cols].values
 
-            raw_pred, dir_prob = self.predict_one(X_pred, curr_reg_info["regime"])
-            
-            # ── Fix Forecast Logic (v5.0 Upgrade) ──
-            # Price adjustment based on probability to avoid counter-intuitive moves
-            adjusted_base = raw_pred * (1 + (dir_prob - 0.5))
-            
-            feats_dict = last_row.to_dict(orient="records")[0]
-            constrained_pred = _apply_realism_constraints(adjusted_base, prev_price, feats_dict, df_work)
-            capped_pred = _clip_circuit(constrained_pred, prev_price)
+            point = self.predict_next_session(
+                X_row=X_pred,
+                prev_price=prev_price,
+                history=df_work,
+                next_date=next_date,
+                regime_info=curr_reg_info,
+            )
+            capped_pred = float(point.predicted_close)
+
+            # ── Stabilization layer (ATR/vol caps + smoothing) ─────────────────
+            try:
+                from stabilization import StabilizationParams, stabilize_forecast_step
+
+                hist_rets = df_work["close"].astype(float).pct_change().dropna().values[-252:]
+                feats_dict = last_row.to_dict(orient="records")[0]
+                atr_pct = float(feats_dict.get("atr_pct_14", 0.03) or 0.03)
+                if atr_pct <= 0:
+                    atr_pct = 0.03
+                params = StabilizationParams()
+                if step == 1:
+                    prev_smoothed = None
+                else:
+                    prev_smoothed = float(predictions[-1].predicted_close) if predictions else None
+                stabilized, smoothed = stabilize_forecast_step(
+                    step=step,
+                    prev_price=prev_price,
+                    raw_pred=capped_pred,
+                    atr_pct=atr_pct,
+                    hist_rets=hist_rets,
+                    feats=feats_dict,
+                    params=params,
+                    prev_smoothed=prev_smoothed,
+                )
+                capped_pred = float(smoothed)
+            except Exception:
+                pass
 
             # Volatility range based on actual regime volatility
             vol_pct = curr_reg_info.get("volatility_pct", 2.0) / 100.0
             band = capped_pred * vol_pct * 1.5
             
             change_pct = (capped_pred - prev_price) / (prev_price + 1e-9) * 100
-            conf_dist = abs(dir_prob - 0.5)
+            predicted_return = (capped_pred / (prev_price + 1e-9)) - 1.0
+            conf_dist = abs(point.direction_prob - 0.5)
             confidence = "high" if conf_dist > 0.15 else "medium" if conf_dist > 0.07 else "low"
 
             predictions.append(ForecastPoint(
                 day=step, date=next_date.strftime("%Y-%m-%d"),
                 predicted_close=round(capped_pred, 2),
-                direction_prob=round(dir_prob, 3),
+                predicted_return=round(predicted_return, 6),
+                direction_prob=round(point.direction_prob, 3),
                 low_band=round(capped_pred - band, 2),
                 high_band=round(capped_pred + band, 2),
                 change_pct=round(change_pct, 2),
@@ -688,7 +816,7 @@ class NEPSEEnsemble:
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _blend(self, preds: dict, X_vl) -> np.ndarray:
-        weights = {"lgb": 0.35, "xgb": 0.25, "gbm": 0.20, "rf": 0.15, "ridge": 0.05}
+        weights = ENSEMBLE_WEIGHTS
         blended, total_w = None, 0.0
         for name, w in weights.items():
             if name in preds:
@@ -698,7 +826,7 @@ class NEPSEEnsemble:
         return blended / total_w if blended is not None else np.mean(list(preds.values()), axis=0)
 
     def _blend_dict(self, preds: Dict[str, float]) -> float:
-        weights = {"lgb": 0.35, "xgb": 0.25, "gbm": 0.20, "rf": 0.15, "ridge": 0.05}
+        weights = ENSEMBLE_WEIGHTS
         res, total_w = 0.0, 0.0
         for name, w in weights.items():
             if name in preds and preds[name] is not None and not np.isnan(preds[name]):
@@ -733,7 +861,7 @@ class NEPSEEnsemble:
                 "min_child_samples": trial.suggest_int("min_child_samples", 10, 40),
                 "subsample": trial.suggest_float("subsample", 0.7, 1.0),
                 "colsample_bytree": trial.suggest_float("colsample_bytree", 0.7, 1.0),
-                "random_state": 42, "verbose": -1
+                "random_state": self.random_state, "verbose": -1
             }
             # Fast CV on 1st fold
             tr_idx, vl_idx = splits[0]
@@ -745,17 +873,22 @@ class NEPSEEnsemble:
             preds = m.predict(Xvl)
             
             if self.optimize_for == "sharpe":
-                prev_y = y.iloc[vl_idx].shift(1).bfill()
-                rets = (preds - prev_y) / (prev_y + 1e-9)
-                sharpe = np.mean(rets) / (np.std(rets) + 1e-9)
+                positions = (preds > 0).astype(float)
+                strat_rets = positions * yvl
+                sigma = float(np.std(strat_rets))
+                sharpe = 0.0 if sigma <= 1e-12 else float(np.sqrt(252.0) * np.mean(strat_rets) / sigma)
                 return -sharpe
             return mean_absolute_error(yvl, preds)
 
-        study = optuna.create_study(direction="minimize")
+        try:
+            sampler = optuna.samplers.TPESampler(seed=self.random_state)
+        except Exception:
+            sampler = None
+        study = optuna.create_study(direction="minimize", sampler=sampler)
         # Extend timeout to 120s for highly complex features, and add catch for trials
         try:
             study.optimize(obj, n_trials=self.n_opt_trials, timeout=120, catch=(Exception,))
-            return {**study.best_params, "random_state": 42, "verbose": -1}
+            return {**study.best_params, "random_state": self.random_state, "verbose": -1}
         except Exception as e:
             logger.warning(f"Optuna optimize loop failed: {e}")
             return _default_lgb_params()

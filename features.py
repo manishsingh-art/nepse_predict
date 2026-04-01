@@ -25,7 +25,7 @@ from typing import Optional, Dict, Any
 
 # ─── Nepal Calendar Integration ───────────────────────────────────────────────
 try:
-    from nepal_calendar import NepalMarketCalendar, ad_to_bs, get_calendar
+    from nepal_calendar import NepalMarketCalendar, get_calendar
     _CAL: Optional[NepalMarketCalendar] = None
 
     def _get_cal() -> NepalMarketCalendar:
@@ -48,6 +48,7 @@ def build_features(
     df: pd.DataFrame,
     sentiment_score: float = 0.0,
     smart_money_info: Optional[Dict[str, Any]] = None,
+    include_context_features: bool = False,
 ) -> pd.DataFrame:
     """
     Adds all features to a copy of `df`.
@@ -246,15 +247,20 @@ def build_features(
     df["is_bear"] = ((cl < df["sma_20"]) & (df["sma_20"] < df["sma_50"])).astype(float)
     df["regime_volatility"] = df["volatility_20"] * df["vol_ratio_20"]
 
-    # ── Smart Money HHI injection (v6.1/v6.2) ────────────────────────────────
-    # Floorsheet-derived stats are "current context" signals; inject as constant columns
-    sm = smart_money_info or {}
-    df["sm_buy_hhi"] = float(sm.get("buy_hhi", 0.0) or 0.0)
-    df["sm_sell_hhi"] = float(sm.get("sell_hhi", 0.0) or 0.0)
-    df["sm_buy_concentration"] = float(sm.get("buy_concentration", 0.0) or sm.get("buy_concentration_top5", 0.0) or 0.0)
-    df["sm_sell_concentration"] = float(sm.get("sell_concentration", 0.0) or sm.get("sell_concentration_top5", 0.0) or 0.0)
-    df["sm_trap_score"] = float(sm.get("trap_score", 0.0) or 0.0)
-    df["sm_wash_trading_alert"] = float(bool(sm.get("wash_trading_alert", False)))
+    # Smart-money snapshots are inference-time context only. They must not be
+    # broadcast across historical rows during training because that leaks a
+    # single present-time state into the full sample.
+    if include_context_features:
+        sm = smart_money_info or {}
+        df["sm_buy_hhi"] = float(sm.get("buy_hhi", 0.0) or 0.0)
+        df["sm_sell_hhi"] = float(sm.get("sell_hhi", 0.0) or 0.0)
+        df["sm_buy_concentration"] = float(sm.get("buy_concentration", 0.0) or sm.get("buy_concentration_top5", 0.0) or 0.0)
+        df["sm_sell_concentration"] = float(sm.get("sell_concentration", 0.0) or sm.get("sell_concentration_top5", 0.0) or 0.0)
+        df["sm_trap_score"] = float(sm.get("trap_score", 0.0) or 0.0)
+        df["sm_wash_trading_alert"] = float(bool(sm.get("wash_trading_alert", False)))
+        df["sm_smart_money_flow"] = float(sm.get("smart_money_flow", 0.0) or 0.0)
+        df["sm_broker_concentration"] = float(sm.get("broker_concentration", 0.0) or 0.0)
+        df["sm_accumulation_flag"] = float(sm.get("accumulation_flag", 0.0) or 0.0)
 
     # ── Price-Volume Divergence (v6.1) ───────────────────────────────────────
     # Divergence: Price Up + Vol Down => bearish divergence; Price Down + Vol Up => bullish divergence
@@ -289,6 +295,34 @@ def build_features(
     df["garch_vol"] = np.sqrt(df["ret_1d"].pow(2).ewm(span=20, adjust=False).mean())
     df["garch_cluster"] = (df["garch_vol"] / (df["garch_vol"].rolling(60).mean() + 1e-9)).clip(0, 5)
 
+    # ── Market-relative features vs NEPSE index (beta/corr) ───────────────────
+    if "nepse_ret_1d" in df.columns:
+        idx_ret = df["nepse_ret_1d"].astype(float)
+        stk_ret = df["ret_1d"].astype(float)
+
+        for w in [20, 60]:
+            df[f"corr_nepse_{w}"] = stk_ret.rolling(w).corr(idx_ret)
+
+        # Beta (cov/var) over 60d window
+        w = 60
+        cov = stk_ret.rolling(w).cov(idx_ret)
+        var = idx_ret.rolling(w).var()
+        df["beta_nepse_60"] = cov / (var + 1e-9)
+
+        # Relative strength: stock return minus index return
+        df["rel_ret_1d"] = stk_ret - idx_ret
+
+    # ── Liquidity / microstructure robustness ─────────────────────────────────
+    # Low-liquidity flag: current volume below 20th percentile of last 60 sessions
+    try:
+        vol_p20 = vol.rolling(60).quantile(0.20)
+        df["illiquid_flag"] = (vol < vol_p20).astype(float)
+    except Exception:
+        df["illiquid_flag"] = 0.0
+
+    # Volume anomaly magnitude (absolute z-score)
+    df["vol_z_abs"] = df["vol_zscore"].abs()
+
     # ── Numeric regime label + streak (used by some model heads) ─────────────
     #  1 = bull, -1 = bear, 0 = sideways/neutral
     df["regime"] = np.select([df["is_bull"] > 0.5, df["is_bear"] > 0.5], [1.0, -1.0], default=0.0)
@@ -298,27 +332,6 @@ def build_features(
     rolling_min_252 = cl.rolling(min(252, len(df))).min()
     rolling_max_252 = cl.rolling(min(252, len(df))).max()
     df["price_rank_52w"] = (cl - rolling_min_252) / (rolling_max_252 - rolling_min_252 + 1e-9)
-
-    # ── Market Index Features (v5.0 Upgrade) ──────────────────────────────────
-    if "nepse_ret_1d" in df.columns:
-        df["nepse_return"] = df["nepse_ret_1d"]
-    
-    # ── Smart Money Features (v5.0 Upgrade) ───────────────────────────────────
-    df["volume_spike"] = (vol > vol.rolling(20).mean() * 2).astype(float)
-    
-    # Handle delivery data safely
-    if "delivery_qty" in df.columns:
-        delivery_qty = pd.to_numeric(df["delivery_qty"], errors="coerce").fillna(0.0)
-    else:
-        delivery_qty = pd.Series(0.0, index=df.index)
-    
-    if smart_money_info and "delivery_qty" in smart_money_info:
-        delivery_qty = float(smart_money_info["delivery_qty"])
-    df["delivery_ratio"] = (delivery_qty / (vol + 1e-9)).clip(0, 1)
-
-    # ── News Decay Feature (v5.0 Upgrade) ─────────────────────────────────────
-    days_since = float(smart_money_info.get("days_since_news", 0.0) if smart_money_info else 0.0)
-    df["news_decay"] = float(sentiment_score) * np.exp(-days_since / 3)
 
     return df
 
@@ -378,12 +391,13 @@ def _add_nepal_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
 def add_targets(df: pd.DataFrame) -> pd.DataFrame:
     """
     Adds prediction targets:
-    - target_next_close : next session close (regression)
-    - target_direction  : 1=up, 0=down next session (classification)
-    - target_ret_1d     : next session return (regression)
+    - target_ret_1d     : next session close-to-close return (primary target)
+    - target_direction  : 1=up, 0=down next session (classification helper)
+    - target_next_close : next session close (derived output helper)
     - target_ret_5d     : 5-day forward return (signal evaluation)
     """
     cl = df["close"].astype(float)
+    df["target_date"] = df["date"].shift(-1)
     df["target_next_close"] = cl.shift(-1)
     df["target_ret_1d"]     = cl.pct_change(fill_method=None).shift(-1)
     df["target_ret_5d"]     = cl.pct_change(5, fill_method=None).shift(-5)
@@ -440,9 +454,6 @@ BASE_FEATURES = [
     "is_fiscal_q1", "is_fiscal_q4",
     # Behavioral (v6.1)
     "fomo_index", "panic_index", "garch_vol", "garch_cluster", "pv_divergence_score", "vol_of_vol",
-    # Smart money context (floorsheet)
-    "sm_buy_hhi", "sm_sell_hhi", "sm_buy_concentration", "sm_sell_concentration",
-    "sm_trap_score", "sm_wash_trading_alert",
     # Lags
     "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_5",
     "close_lag_1",
@@ -452,15 +463,16 @@ BASE_FEATURES = [
     "sma_5_20_cross", "sma_10_50_cross",
     # Market (NEPSE Index)
     "nepse_ret_1d", "nepse_rsi_14", "nepse_dist_ema_20", "nepse_vol_ratio",
-    "nepse_return", "relative_strength",
-    # Additional v5.0 Upgrades
-    "volume_spike", "delivery_ratio", "news_decay",
+    # Market-relative
+    "corr_nepse_20", "corr_nepse_60", "beta_nepse_60", "rel_ret_1d",
+    # Liquidity filters
+    "illiquid_flag", "vol_z_abs",
 ]
 
 # Nepal-specific features (only added when nepal_calendar is available)
 NEPAL_FEATURES = [
     "np_bs_month",
-    "np_bs_day_of_month_norm",
+    # Removed: `np_bs_day_of_month_norm` (overfits / calendar leakage risk)
     "np_fiscal_month",
     "np_fiscal_quarter",
     "np_is_fiscal_q1",
@@ -487,7 +499,24 @@ NEPAL_FEATURES = [
 def get_feature_cols(df: pd.DataFrame) -> list:
     """Return all available feature columns (base + Nepal) that exist in df."""
     all_feats = BASE_FEATURES + NEPAL_FEATURES
-    return [c for c in all_feats if c in df.columns]
+    cols = [c for c in all_feats if c in df.columns]
+
+    # Deterministic pruning: drop features with extreme missingness or zero variance.
+    # This improves stability across symbols without changing the overall pipeline logic.
+    pruned = []
+    for c in cols:
+        s = df[c]
+        try:
+            missing = float(s.isna().mean())
+            if missing > 0.50:
+                continue
+            v = float(np.nanvar(s.astype(float).values))
+            if not np.isfinite(v) or v < 1e-12:
+                continue
+        except Exception:
+            continue
+        pruned.append(c)
+    return pruned
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -504,6 +533,37 @@ def _ensure_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["volume"] = df["volume"].astype(float).fillna(0.0)
     return df
+
+
+PRIMARY_TARGET_COL = "target_ret_1d"
+
+
+def clean_ohlcv_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize and clean raw OHLCV data before feature engineering.
+    Keeps zero-volume rows but removes impossible candles and duplicate dates.
+    """
+    out = df.copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out = _ensure_ohlcv(out)
+    out = out.dropna(subset=["date", "open", "high", "low", "close"])
+
+    price_cols = ["open", "high", "low", "close"]
+    for col in price_cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out["volume"] = pd.to_numeric(out["volume"], errors="coerce").fillna(0.0)
+
+    invalid = (
+        out[price_cols].le(0).any(axis=1)
+        | (out["high"] < out["low"])
+        | (out["high"] < out[["open", "close"]].max(axis=1))
+        | (out["low"] > out[["open", "close"]].min(axis=1))
+        | (out["volume"] < 0)
+    )
+    out = out.loc[~invalid].copy()
+    out = out.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+    out["zero_volume_flag"] = (out["volume"] <= 0).astype(float)
+    return out
 
 
 def add_market_features(df: pd.DataFrame, nepse_df: pd.DataFrame) -> pd.DataFrame:
@@ -526,21 +586,15 @@ def add_market_features(df: pd.DataFrame, nepse_df: pd.DataFrame) -> pd.DataFram
     nepse_vol_sma = nepse['volume'].rolling(20).mean()
     nepse['nepse_vol_ratio'] = nepse['volume'] / (nepse_vol_sma + 1e-9)
     
-    # Relative Strength (Stock / NEPSE)
-    nepse['nepse_close_abs'] = nepse['close']
-    
     # Normalize dates for merging
     df['date_only'] = pd.to_datetime(df['date']).dt.date
     nepse['date_only'] = pd.to_datetime(nepse['date']).dt.date
     
-    # Merge necessary columns
-    cols_to_merge = ['date_only', 'nepse_ret_1d', 'nepse_rsi_14', 'nepse_dist_ema_20', 'nepse_vol_ratio', 'nepse_close_abs']
+    # Merge only necessary columns
+    cols_to_merge = ['date_only', 'nepse_ret_1d', 'nepse_rsi_14', 'nepse_dist_ema_20', 'nepse_vol_ratio']
     df = pd.merge(df, nepse[cols_to_merge], on='date_only', how='left')
     
-    # Calculate relative strength after merge
-    df['relative_strength'] = df['close'] / (df['nepse_close_abs'] + 1e-9)
-    
-    return df.drop(columns=['date_only', 'nepse_close_abs'])
+    return df.drop(columns=['date_only'])
 
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:

@@ -33,22 +33,26 @@ import pandas as pd
 from colorama import Fore, Style, init
 from tabulate import tabulate
 
-from fetcher import fetch_company_list, fetch_history, get_aggregate_sentiment, fetch_live_price, fetch_floorsheet, fetch_news_sentiment
-from features import build_features, add_targets, get_feature_cols
+from prediction_engine import set_global_determinism, compute_sentiment
+from fetcher import fetch_company_list, fetch_history, get_aggregate_sentiment, fetch_live_price, fetch_floorsheet, fetch_news_sentiment, resolve_symbol
+from features import clean_ohlcv_data
 from models import NEPSEEnsemble, ForecastPoint
+from models import ENSEMBLE_WEIGHTS
 from analyze import (
     add_indicators, detect_trend, detect_anomalies,
-    predict_prices, suggest_strategy,
+    suggest_strategy,
     print_header, print_section,
 )
 from sector_analysis import identify_market_drivers
 from index_predictor import run_index_prediction
-from features import add_market_features
 from ollama_ai import generate_ai_summary, analyze_sentiment_headlines, is_ollama_available
 from fetcher import get_smart_money_signals
 from smart_money import SmartMoneyAnalyst
 from regime import MarketRegimeDetector
 from strategy import TradingStrategyEngine
+from decision_engine import DecisionInputs, compute_final_decision
+from pipeline import run_full_pipeline, train_model
+from backtest_engine import BacktestConfig
 
 init(autoreset=True)
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
@@ -57,10 +61,20 @@ logger = logging.getLogger(__name__)
 REPORT_DIR = Path("reports")
 DATA_DIR   = Path("data")
 
+# ── Authoritative NEPSE Calendar Facade ───────────────────────────────────────
+try:
+    from nepse_market_calendar import get_market_calendar
+
+    _MKT_CAL = get_market_calendar()
+    HAS_MKT_CAL = True
+except Exception:
+    _MKT_CAL = None
+    HAS_MKT_CAL = False
+
 # ── Nepal Calendar ────────────────────────────────────────────────────────────
 try:
     from nepal_calendar import (
-        NepalMarketCalendar, ad_to_bs, get_bs_month_name,
+        NepalMarketCalendar, get_bs_month_name,
         next_nepse_trading_dates,
     )
     _NEPAL_CAL = NepalMarketCalendar(fetch_live=True)
@@ -68,6 +82,15 @@ try:
 except ImportError:
     HAS_NEPAL_CAL = False
     _NEPAL_CAL = None
+
+# ── AD↔BS conversion (authoritative) ─────────────────────────────────────────
+try:
+    from nepse_date_utils import ad_to_bs_ymd, validate_ad_bs_mapping
+    HAS_BS_UTILS = True
+except Exception:
+    HAS_BS_UTILS = False
+    ad_to_bs_ymd = None
+    validate_ad_bs_mapping = None
 
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
@@ -103,29 +126,69 @@ def banner():
 
 
 def _print_market_status():
-    """Print today's market status using Nepal calendar."""
-    if not HAS_NEPAL_CAL or _NEPAL_CAL is None:
-        return
+    """Print today's market status using authoritative NEPSE calendar facade."""
     today = date.today()
-    bs    = ad_to_bs(today)
-    bs_str = f"BS {bs[0]}-{bs[1]:02d}-{bs[2]:02d} ({get_bs_month_name(bs[1])})"
+    bs_str = ""
+    if HAS_NEPAL_CAL and HAS_BS_UTILS:
+        try:
+            validate_ad_bs_mapping(today)
+            y, m, d = ad_to_bs_ymd(today)
+            bs_str = f"BS {y}-{m:02d}-{d:02d} ({get_bs_month_name(m)})"
+        except Exception:
+            bs_str = ""
 
     print_section("Nepal Market Status")
     print(f"  Today (AD)   : {today.strftime('%Y-%m-%d')} ({today.strftime('%A')})")
-    print(f"  Today (BS)   : {bs_str}")
+    if bs_str:
+        print(f"  Today (BS)   : {bs_str}")
 
-    is_trading = _NEPAL_CAL.is_trading_day(today)
-    if is_trading:
-        market_str = f"{Fore.GREEN}OPEN ✅{Style.RESET_ALL}  (Sun–Thu, 11:00–15:00 NST)"
-    else:
-        if _NEPAL_CAL.is_weekend(today):
-            reason = "Weekend (Fri/Sat closed)"
-        elif _NEPAL_CAL.is_public_holiday(today):
-            hname = _NEPAL_CAL.get_holiday_name(today) or "Public Holiday"
-            reason = f"Public Holiday: {hname}"
+    # Prefer authoritative facade (supports API + overrides); fallback to static calendar.
+    if HAS_MKT_CAL and _MKT_CAL is not None:
+        st = _MKT_CAL.market_status(today)
+        if st.is_trading_day:
+            suffix = " (pre-holiday liquidity risk)" if st.is_pre_holiday else ""
+            if getattr(st, "warning", None):
+                suffix += f"  |  ⚠ {st.warning}"
+            market_str = f"{Fore.GREEN}OPEN ✅{Style.RESET_ALL}  (Sun–Thu, 11:00–15:00 NST){suffix}"
         else:
-            reason = "Market Closed"
-        market_str = f"{Fore.RED}CLOSED ❌{Style.RESET_ALL}  ({reason})"
+            r = st.reason
+            if st.holiday_name:
+                r = f"{r}: {st.holiday_name}"
+            market_str = f"{Fore.RED}CLOSED ❌{Style.RESET_ALL}  ({r})"
+        print(f"  Market Today : {market_str}")
+        if hasattr(st, "warning") and st.warning:
+            pass
+        try:
+            next_td = _MKT_CAL.next_trading_day(today)
+            print(f"  Next Trading : {next_td.strftime('%Y-%m-%d')} ({next_td.strftime('%A')})")
+        except Exception:
+            pass
+        try:
+            upcoming = _MKT_CAL.upcoming_holidays(today, n=3)
+            if upcoming:
+                hol_str = "  |  ".join(
+                    f"{h['date']} {h['name']} (in {h['days_away']}d)"
+                    for h in upcoming
+                )
+                print(f"  Upcoming     : {hol_str}")
+        except Exception:
+            pass
+        print()
+        return
+
+    if HAS_NEPAL_CAL and _NEPAL_CAL is not None:
+        is_trading = _NEPAL_CAL.is_trading_day(today)
+        if is_trading:
+            market_str = f"{Fore.GREEN}OPEN ✅{Style.RESET_ALL}  (Sun–Thu, 11:00–15:00 NST)"
+        else:
+            if _NEPAL_CAL.is_weekend(today):
+                reason = "Weekend (Fri/Sat closed)"
+            elif _NEPAL_CAL.is_public_holiday(today):
+                hname = _NEPAL_CAL.get_holiday_name(today) or "Public Holiday"
+                reason = f"Public Holiday: {hname}"
+            else:
+                reason = "Market Closed"
+            market_str = f"{Fore.RED}CLOSED ❌{Style.RESET_ALL}  ({reason})"
 
     print(f"  Market Today : {market_str}")
 
@@ -275,63 +338,91 @@ def rolling_accuracy(data: dict, symbol: str, n: int = 7) -> Optional[float]:
     return round(np.mean([abs(e) for e in completed[-n:]]), 2)
 
 
+def recent_bias(data: dict, symbol: str, n: int = 5) -> float:
+    """
+    Signed bias over last n completed points:
+      + => underprediction (actual > predicted)
+      - => overprediction (actual < predicted)
+    """
+    sym = symbol.upper()
+    vals = []
+    for e in data.get(sym, []):
+        if e.get("error_pct") is None:
+            continue
+        try:
+            vals.append(float(e["error_pct"]) / 100.0)
+        except Exception:
+            continue
+    if not vals:
+        return 0.0
+    return float(np.mean(vals[-n:]))
+
+
 # ─── Walk-Forward Backtest ────────────────────────────────────────────────────
 
 def run_backtest(df: pd.DataFrame, symbol: str, window: int = 60, n_test: int = 20) -> dict:
-    print_section(f"Walk-Forward Backtest ({n_test} test points, window={window})")
-    if len(df) < window + n_test:
-        print(f"  {Fore.YELLOW}Insufficient data for backtest.{Style.RESET_ALL}")
+    print_section("ML Walk-Forward Backtest")
+    if len(df) < 120:
+        print(f"  {Fore.YELLOW}Insufficient data for ML backtest.{Style.RESET_ALL}")
         return {}
 
-    errors, dir_acc, results = [], [], []
-    start_i = len(df) - n_test
-    print(f"  Running {n_test} rolling predictions…", end="", flush=True)
+    market_df = None
+    try:
+        if symbol.upper() != "NEPSE":
+            years = max(1, round((df["date"].iloc[-1] - df["date"].iloc[0]).days / 365, 1))
+            market_df = fetch_history("NEPSE", years=years)
+    except Exception as exc:
+        logger.warning("Backtest market features unavailable: %s", exc)
 
-    for i in range(n_test):
-        train_end = start_i + i
-        if train_end < window: continue
-        train_df  = df.iloc[train_end - window: train_end].copy()
-        actual    = float(df["close"].iloc[train_end])
-        prev      = float(df["close"].iloc[train_end - 1])
-        actual_dt = df["date"].iloc[train_end].strftime("%Y-%m-%d")
-        try:
-            preds   = predict_prices(train_df, 1)
-            pred_p  = preds[0]["predicted_close"]
-            err_pct = (actual - pred_p) / (pred_p + 1e-9) * 100
-            correct = int((pred_p > prev) == (actual > prev))
-            errors.append(abs(err_pct)); dir_acc.append(correct)
-            results.append({"date": actual_dt, "actual": actual,
-                            "predicted": pred_p, "error_pct": round(err_pct, 2),
-                            "direction_correct": correct})
-        except Exception:
-            continue
+    result = run_full_pipeline(
+        data=df,
+        symbol=symbol,
+        market_data=market_df,
+        forecast_horizon=1,
+        optimise=False,
+        n_folds=min(5, max(3, len(df) // 180)),
+        backtest_config=BacktestConfig(),
+    )
+    summary = result.backtest.summary
+    trades = result.backtest.trades[-10:]
 
-    print(" done.")
-    if not errors: return {}
+    if trades:
+        table = [
+            [
+                t["entry_date"],
+                t["exit_date"],
+                f"NPR {t['entry_price']:,.2f}",
+                f"NPR {t['exit_price']:,.2f}",
+                t["holding_days"],
+                f"{t['gross_return_pct']:+.2f}%",
+                f"{t['net_pnl']:+,.2f}",
+            ]
+            for t in trades
+        ]
+        print(tabulate(
+            table,
+            headers=["Entry", "Exit", "Entry Px", "Exit Px", "Days", "Gross%", "Net PnL"],
+            tablefmt="simple",
+        ))
 
-    table = [
-        [r["date"], f"NPR {r['actual']:,.2f}", f"NPR {r['predicted']:,.2f}",
-         f"{r['error_pct']:+.2f}%", "✅" if r["direction_correct"] else "❌"]
-        for r in results[-10:]
-    ]
-    print(tabulate(table, headers=["Date", "Actual", "Predicted", "Error%", "Dir"], tablefmt="simple"))
-
-    summary = {
-        "n_predictions": len(errors),
-        "avg_abs_error_pct": round(np.mean(errors), 2),
-        "directional_accuracy_pct": round(np.mean(dir_acc) * 100, 2),
-        "within_1pct": round(sum(1 for e in errors if e < 1) / len(errors) * 100, 1),
-        "within_2pct": round(sum(1 for e in errors if e < 2) / len(errors) * 100, 1),
-        "within_5pct": round(sum(1 for e in errors if e < 5) / len(errors) * 100, 1),
-    }
     print()
-    print(f"  Avg Abs Error  : {summary['avg_abs_error_pct']:.2f}%")
-    print(f"  Directional Acc: {summary['directional_accuracy_pct']:.1f}%")
-    print(f"  Within 1%      : {summary['within_1pct']}% of predictions")
-    print(f"  Within 2%      : {summary['within_2pct']}% of predictions")
-    print(f"  Within 5%      : {summary['within_5pct']}% of predictions")
-    print(f"\n  {Fore.YELLOW}ℹ  Realistic NEPSE directional accuracy: 52–65%{Style.RESET_ALL}")
+    print(f"  Total Return   : {summary.get('total_return_pct', 0.0):.2f}%")
+    print(f"  Sharpe Ratio   : {summary.get('sharpe_ratio', 0.0):.2f}")
+    print(f"  Max Drawdown   : {summary.get('max_drawdown_pct', 0.0):.2f}%")
+    print(f"  Win Rate       : {summary.get('win_rate_pct', 0.0):.2f}%")
+    print(f"  Trades         : {int(summary.get('num_trades', 0))}")
+    print(f"  Exposure       : {summary.get('exposure_pct', 0.0):.2f}%")
     return summary
+
+
+def run_recent_backtest(df: pd.DataFrame, symbol: str, n_days: int = 30) -> dict:
+    print_section(f"Recent ML Backtest (last {n_days} sessions)")
+    if len(df) < max(120, n_days + 60):
+        print(f"  {Fore.YELLOW}Insufficient data for recent ML backtest.{Style.RESET_ALL}")
+        return {}
+
+    recent_df = df.tail(max(120, n_days + 60)).copy().reset_index(drop=True)
+    return run_backtest(recent_df, symbol)
 
 
 # ─── ML Ensemble Analysis ────────────────────────────────────────────────────
@@ -345,6 +436,8 @@ def run_ml_analysis(
     n_trials: Optional[int] = None,
     use_ollama: bool = False,
     ollama_model: str = "llama3",
+    seed: int = 42,
+    debug: bool = False,
 ) -> None:
 
     print_header(f"NEPSE ML ANALYSIS — {symbol.upper()}")
@@ -384,8 +477,10 @@ def run_ml_analysis(
         try:
             ld = df["date"].iloc[-1]
             ld_date = ld.date() if hasattr(ld, "date") else ld
-            bs = ad_to_bs(ld_date)
-            print(f"  Last Date BS : {bs[0]}-{bs[1]:02d}-{bs[2]:02d} ({get_bs_month_name(bs[1])})")
+            if HAS_BS_UTILS:
+                validate_ad_bs_mapping(ld_date)
+                y, m, d = ad_to_bs_ymd(ld_date)
+                print(f"  Last Date BS : {y}-{m:02d}-{d:02d} ({get_bs_month_name(m)})")
         except Exception:
             pass
 
@@ -406,36 +501,38 @@ def run_ml_analysis(
         print(f"  {Fore.YELLOW}Ollama not detected locally — falling back to non-AI sentiment.{Style.RESET_ALL}")
         use_ollama = False
         
-    if use_ollama:
-        sentiment = analyze_sentiment_headlines(news_titles, model=ollama_model)
-        score = sentiment.get("score", 0.0)
-        reason = sentiment.get("reason", "No context")
-        cat = sentiment.get("category", "General")
-        
-        s_color = Fore.GREEN if score > 0.3 else Fore.RED if score < -0.3 else Fore.YELLOW
-        s_text = "BULLISH" if score > 0.3 else "BEARISH" if score < -0.3 else "NEUTRAL"
-        
-        print(f"  AI Score ({cat:9s}) : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
-        print(f"  AI Analysis      : {reason}")
+    sent = compute_sentiment(
+        news_titles,
+        use_ollama=use_ollama,
+        ollama_model=ollama_model,
+        analyze_sentiment_headlines_fn=analyze_sentiment_headlines if use_ollama else None,
+    )
+    score = sent.final_score
+    sentiment = {"score": score, "reason": sent.reason, "category": sent.category}
+    s_color = Fore.GREEN if score > 0.3 else Fore.RED if score < -0.3 else Fore.YELLOW
+    s_text = "BULLISH" if score > 0.3 else "BEARISH" if score < -0.3 else "NEUTRAL"
+    if sent.source == "ollama":
+        print(f"  AI Score ({sent.category:9s}) : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
+        if sent.reason:
+            print(f"  AI Analysis      : {sent.reason}")
+        if abs(sent.final_score - sent.baseline_score) > 1e-6:
+            print(f"  Baseline (kw)    : {sent.baseline_score:+.3f}  |  Delta: {(sent.final_score - sent.baseline_score):+.3f}")
     else:
-        # Fallback to basic keyword scoring
-        score = 0.0
-        bull_words = ['surge', 'profit', 'dividend', 'growth', 'bull', 'positive']
-        bear_words = ['loss', 'decline', 'crash', 'bear', 'negative', 'penalty']
-        for t in news_titles:
-            t_lower = t.lower()
-            if any(w in t_lower for w in bull_words): score += 0.5
-            if any(w in t_lower for w in bear_words): score -= 0.5
-        score = max(-1.0, min(1.0, score / max(1, len(news_titles))))
-        sentiment = {"score": score, "reason": "Keyword basic scoring", "category": "General"}
-        
-        s_color = Fore.GREEN if score > 0.3 else Fore.RED if score < -0.3 else Fore.YELLOW
-        print(f"  Aggregate Score  : {s_color}{score:+.3f}  ({'POSITIVE' if score > 0 else 'NEGATIVE' if score < 0 else 'NEUTRAL'}){Style.RESET_ALL}")
+        print(f"  Aggregate Score  : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
         for t in news_titles[:3]:
-            prefix = f"{Fore.GREEN}[POSITIVE]{Style.RESET_ALL}" if any(w in t.lower() for w in bull_words) else \
-                     f"{Fore.RED}[NEGATIVE]{Style.RESET_ALL}" if any(w in t.lower() for w in bear_words) else \
+            tl = t.lower()
+            prefix = f"{Fore.GREEN}[POSITIVE]{Style.RESET_ALL}" if any(w in tl for w in ['surge','profit','dividend','growth','bull','positive','upgrade','accumulate']) else \
+                     f"{Fore.RED}[NEGATIVE]{Style.RESET_ALL}" if any(w in tl for w in ['loss','decline','crash','bear','negative','penalty','downgrade','sell']) else \
                      f"{Fore.YELLOW}[NEUTRAL ]{Style.RESET_ALL}"
             print(f"  {prefix}  {t}")
+
+    # Ensure sentiment score actually feeds the ML feature pipeline.
+    sentiment_score = float(score)
+    if debug:
+        try:
+            print(f"  Debug: sentiment_source={sent.source} baseline={sent.baseline_score:+.3f} final={sent.final_score:+.3f}")
+        except Exception:
+            pass
 
     # ── Market Microstructure (Smart Money) ── v6.0 ───────────────────────────
     print_section("Market Microstructure (Smart Money)")
@@ -463,7 +560,7 @@ def run_ml_analysis(
 
 
     # ── Technical Indicators ──────────────────────────────────────────────────
-    df_ind     = add_indicators(df.copy())
+    df_ind     = add_indicators(clean_ohlcv_data(df.copy()))
     trend_info = detect_trend(df_ind)
 
     print_section("Trend & Momentum Analysis")
@@ -513,62 +610,81 @@ def run_ml_analysis(
         print("  No significant anomalies detected.")
     if run_backtest_flag:
         run_backtest(df, symbol)
+        run_recent_backtest(df, symbol, n_days=30)
 
-    # ── ML Ensemble or Statistical Fallback ──────────────────────────────────
+    # ── Unified ML Pipeline ──────────────────────────────────────────────────
     predictions  = []
     ml_report    = None
     use_ml_success = False
 
-    if use_ml and len(df) >= 100:
+    if not use_ml:
+        print_section("Pipeline Mode")
+        print(f"  {Fore.YELLOW}Statistical mode is deprecated. Running the unified ML pipeline instead.{Style.RESET_ALL}")
+
+    if len(df) >= 100:
         print_section("ML Ensemble Training")
-        print("  Building features (incl. Nepal calendar) & training ensemble…")
+        print("  Building the unified training/prediction pipeline…")
         t0 = time.time()
         try:
-            # ── Market Integration ──
-            logger.info("Fetching NEPSE Index for context...")
+            market_df = None
             try:
-                # Use the same years as the stock df for consistency
-                days_avail = (df['date'].iloc[-1] - df['date'].iloc[0]).days
-                idx_years = max(1, round(days_avail / 365, 1))
-                nepse_df = fetch_history("NEPSE", years=idx_years)
-                feat_df = add_market_features(df.copy(), nepse_df)
+                if symbol.upper() != "NEPSE":
+                    days_avail = (df['date'].iloc[-1] - df['date'].iloc[0]).days
+                    idx_years = max(1, round(days_avail / 365, 1))
+                    market_df = fetch_history("NEPSE", years=idx_years)
             except Exception as me:
                 logger.warning(f"Market features skip: {me}")
-                feat_df = df.copy()
 
-            feat_df      = build_features(feat_df, sentiment_score=sentiment_score, smart_money_info=sm_report)
-            feat_df      = add_targets(feat_df)
-            feature_cols = get_feature_cols(feat_df)
-            
-            # Dynamic optimization trials
-            if n_trials is None:
-                n_opt_trials = 10 if len(df) < 500 else 20
-            else:
-                n_opt_trials = n_trials
-
-            ensemble = NEPSEEnsemble(
+            model, clean_df, feat_df, feature_cols = train_model(
+                data=df,
                 symbol=symbol,
-                n_folds=min(5, max(3, len(df) // 180)),
+                market_data=market_df,
                 optimise=optimise,
-                n_opt_trials=n_opt_trials,
+                n_folds=min(5, max(3, len(df) // 180)),
+                n_opt_trials=10 if n_trials is None and len(df) < 500 else 20 if n_trials is None else n_trials,
+                random_state=seed,
             )
-            ensemble.fit(feat_df, feature_cols)
-            ml_report = ensemble.report_
+            if debug:
+                try:
+                    print_section("Debug: Feature Snapshot (last row)")
+                    snap_cols = [c for c in feature_cols if c in feat_df.columns]
+                    snap = feat_df[snap_cols].iloc[-1].to_dict()
+                    # show only a concise subset by default
+                    keys = sorted(snap.keys())
+                    show = keys[:40]
+                    for k in show:
+                        v = snap.get(k)
+                        if v is None:
+                            continue
+                        try:
+                            vv = float(v)
+                            if np.isfinite(vv):
+                                print(f"  {k:<24s} {vv:>12.6f}")
+                            else:
+                                print(f"  {k:<24s} {v}")
+                        except Exception:
+                            print(f"  {k:<24s} {v}")
+                    if len(keys) > len(show):
+                        print(f"  ... ({len(keys) - len(show)} more features)")
+                except Exception as de:
+                    logger.warning(f"Debug feature snapshot failed: {de}")
+            
+            ml_report = model.report_
 
             elapsed = time.time() - t0
             print(f"  Training complete in {elapsed:.1f}s  |  Models: {', '.join(ml_report.models_used)}")
             print()
-            print(f"  {'Fold':<6} {'MAE':>8} {'RMSE':>8} {'Dir Acc':>9} {'MAPE':>8}")
+            print(f"  {'Fold':<6} {'MAE%':>8} {'RMSE%':>8} {'Dir Acc':>9} {'Sharpe':>8}")
             print(f"  {'─'*6} {'─'*8} {'─'*8} {'─'*9} {'─'*8}")
             for fold in ml_report.cv_folds:
                 da_c = Fore.GREEN if fold.dir_acc >= 58 else Fore.YELLOW if fold.dir_acc >= 52 else Fore.RED
                 print(f"  {fold.fold:<6} {fold.mae:>8.2f} {fold.rmse:>8.2f} "
-                      f"{da_c}{fold.dir_acc:>8.1f}%{Style.RESET_ALL} {fold.mape:>7.2f}%")
+                      f"{da_c}{fold.dir_acc:>8.1f}%{Style.RESET_ALL} {fold.sharpe:>8.2f}")
             print()
             da_avg = ml_report.avg_dir_acc
             da_c   = Fore.GREEN if da_avg >= 58 else Fore.YELLOW if da_avg >= 52 else Fore.RED
             print(f"  Average: MAE={ml_report.avg_mae:.2f} | RMSE={ml_report.avg_rmse:.2f} | "
-                  f"Dir Acc={da_c}{da_avg:.1f}%{Style.RESET_ALL} | MAPE={ml_report.avg_mape:.2f}%")
+                  f"Dir Acc={da_c}{da_avg:.1f}%{Style.RESET_ALL} | Sharpe={ml_report.avg_sharpe:.2f}")
 
             try:
                 if ml_report.feature_importance:
@@ -579,7 +695,8 @@ def run_ml_analysis(
                         print(f"    {feat:<35} {bar} {imp:.4f}")
             except: pass
 
-            ml_preds = ensemble.forecast(df, feature_cols, horizon=n_predict, sentiment_score=sentiment_score)
+            ml_preds = model.forecast(clean_df, feature_cols, horizon=n_predict)
+            logger.info("ML prediction success")
             
             print_section(f"ML Forecast — Next {n_predict} Nepal Trading Sessions")
             try:
@@ -592,8 +709,10 @@ def run_ml_analysis(
                     if HAS_NEPAL_CAL:
                         try:
                             ad = datetime.strptime(p.date, "%Y-%m-%d").date()
-                            bs = ad_to_bs(ad)
-                            bs_date_str = f"{bs[0]}-{bs[1]:02d}-{bs[2]:02d}"
+                            if HAS_BS_UTILS:
+                                validate_ad_bs_mapping(ad)
+                                y, m, d = ad_to_bs_ymd(ad)
+                                bs_date_str = f"{y}-{m:02d}-{d:02d}"
                         except: pass
 
                     pred_table.append([
@@ -611,14 +730,6 @@ def run_ml_analysis(
             except Exception as ue:
                 logger.warning(f"Forecast table display error: {ue}")
 
-            # ── Scenario Analysis (v5.0 Upgrade) ──
-            if ml_preds:
-                print_section("Scenario Analysis (Probabilistic Outcomes)")
-                base_f = ml_preds[min(2, len(ml_preds)-1)] # session 3
-                print(f"  Bull Case (30%) → Target: NPR {base_f.scenario_bull:,.2f} (+{((base_f.scenario_bull/last_price)-1)*100:+.2f}%)")
-                print(f"  Base Case (50%) → Target: NPR {base_f.predicted_close:,.2f} (+{((base_f.predicted_close/last_price)-1)*100:+.2f}%)")
-                print(f"  Bear Case (20%) → Target: NPR {base_f.scenario_bear:,.2f} ({((base_f.scenario_bear/last_price)-1)*100:+.2f}%)")
-
             
             # Signal generation (v6.1) — ATR-aware strategy
             atr_value = trend_info.get("atr", None)  if "trend_info" in dir() else None
@@ -626,80 +737,26 @@ def run_ml_analysis(
             trade_plan = strat_engine.generate_strategy(last_price, ml_preds, sm_report, regime_info, atr=atr_value)
             
             try:
-                # ── Final Decision Engine Integration (v5.0 Upgrade) ──
-                m_prob = float(ml_preds[0].direction_prob)
-                t_score = float(trend_info["score"])
-                s_score = float(sentiment.get("score", 0.0))
-                mom_score = float(trend_info["recent_5d_momentum"])
-                vol_score = float(trend_info["vol_ratio"])
-                
-                final_sig, final_conf = ensemble.compute_final_signal(m_prob, t_score, s_score, mom_score, vol_score)
-                
-                # Model Reliability (v5.0 Upgrade)
-                log_data = load_log()
-                accuracy = 0.0
-                hist_entries = log_data.get(symbol.upper(), [])
-                if hist_entries:
-                    correct = sum(1 for e in hist_entries if e.get("error_pct") is not None and abs(e["error_pct"]) < 3) # within 3%
-                    # Actually directional:
-                    # directional_correct = sum(1 for e in hist_entries if ...) 
-                    # Use the error/backtest summary if available
-                    accuracy = rolling_accuracy(log_data, symbol) or 0.0
-                
-                print_section("FINAL MARKET VERDICT")
-                sig_color = Fore.GREEN if final_sig == "BUY" else Fore.RED if final_sig == "SELL" else Fore.YELLOW
-                print(f"  FINAL SIGNAL      : {sig_color}{Style.BRIGHT}{final_sig}{Style.RESET_ALL}")
-                print(f"  Confidence        : {final_conf*100:.1f}%")
-                
-                # Model Reliability
-                rel_c = Fore.GREEN if accuracy < 2 else Fore.YELLOW if accuracy < 5 else Fore.RED
-                rel_text = f"{100 - accuracy:.1f}%" if accuracy > 0 else "Pending Data"
-                print(f"  Model Reliability : {rel_c}{rel_text}{Style.RESET_ALL} (Historical Precision)")
-                
-                # Reason Construction
-                reasons = []
-                reasons.append(f"ML Probability: {m_prob:.0%}")
-                reasons.append(f"Trend: {'BULLISH' if t_score > 0 else 'BEARISH' if t_score < 0 else 'NEUTRAL'}")
-                reasons.append(f"Sentiment: {'POS' if s_score > 0 else 'NEG' if s_score < 0 else 'NEUT'}")
-                print(f"  Reason            : {', '.join(reasons)}")
-
                 print_section("Actionable Trade Plan (v6.1 Strategy Layer)")
                 ac = Fore.GREEN if "BUY" in trade_plan["action"] else Fore.RED if ("SELL" in trade_plan["action"] or "AVOID" in trade_plan["action"]) else Fore.YELLOW
-                
-                # Improved Trade Plan (v5.0 Upgrade) - Zones
-                sup20 = trend_info.get("support") or last_price * 0.95
-                res20 = trend_info.get("resistance") or last_price * 1.05
-                
-                print(f"  Buy Zone          : NPR {sup20 * 0.98:,.2f} – {sup20 * 1.02:,.2f} (Support ±2%)")
-                print(f"  Breakout Buy      : Above NPR {res20:,.2f} (Resistance Validation)")
-                print(f"  Target Price (TP) : NPR {trade_plan['take_profit']:,.2f}")
-                print(f"  Stop Loss (SL)    : NPR {trade_plan['stop_loss']:,.2f}")
-                print(f"  Risk/Reward Ratio : {trade_plan['risk_reward_ratio']:.2f}x")
-                print(f"  Position Weight   : {trade_plan['suggested_size_weight']*100:.0f}% of Normal Unit")
+                print(f"  Recommended Action : {ac}{trade_plan['action']}{Style.RESET_ALL}")
+                print(f"  Entry              : NPR {trade_plan['entry']:,.2f}")
+                print(f"  Target Price (TP)  : NPR {trade_plan['take_profit']:,.2f}")
+                print(f"  Stop Loss (SL)     : NPR {trade_plan['stop_loss']:,.2f}")
+                if trade_plan.get('atr_used'):
+                    print(f"  ATR(14)            : NPR {trade_plan['atr_used']:,.2f} (volatility unit)")
+                print(f"  Risk/Reward Ratio  : {trade_plan['risk_reward_ratio']:.2f}x")
+                print(f"  Trap Index         : {trade_plan.get('trap_index', 0)}/100")
+                print(f"  Position Weight    : {trade_plan['suggested_size_weight']*100:.0f}% of Normal Unit")
+                print(f"  Rationale          : {trade_plan['reason']}")
             except: pass
 
             predictions = ml_preds
             use_ml_success = True
 
         except Exception as e:
-            print(f"  {Fore.YELLOW}ML training failed ({e}). Falling back to statistical model.{Style.RESET_ALL}")
-
-    if not use_ml_success:
-        print_section(f"Statistical Forecast — Next {n_predict} Sessions")
-        print(f"  {Fore.YELLOW}(Statistical blend — install lightgbm/xgboost for ML ensemble){Style.RESET_ALL}")
-        try:
-            predictions = predict_prices(df, n_predict)
-            headers = ["Day", "Date AD", "Date BS", "Day", "Predicted", "Δ%"]
-            pred_table = []
-            for p in predictions:
-                row = [
-                    p["day"], p["date"], p.get("bs_date", "-"), p.get("day_name", "")[:3],
-                    f"NPR {p['predicted_close']:,.2f}", f"{p['change_pct']:+.2f}%"
-                ]
-                pred_table.append(row)
-            print(tabulate(pred_table, headers=headers, tablefmt="rounded_outline"))
-        except Exception as e:
-            print(f"  {Fore.RED}Prediction failed: {e}")
+            logger.exception("ML training/prediction failed: %s", e)
+            print(f"  {Fore.RED}Unified ML pipeline failed: {e}{Style.RESET_ALL}")
 
     # ── Previous prediction evaluation ───────────────────────────────────────
     log_data     = load_log()
@@ -709,10 +766,22 @@ def run_ml_analysis(
     if symbol.upper() not in log_data or not any(
         e.get("date") == latest_date for e in log_data.get(symbol.upper(), [])
     ):
-        if len(df) > 20:
+        if len(df) > 100:
             try:
-                bt_preds = predict_prices(df.iloc[:-1].copy(), 1)
-                bt_price = bt_preds[0]["predicted_close"]
+                hist_market_df = None
+                if symbol.upper() != "NEPSE":
+                    hist_years = max(1, round((df.iloc[:-1]["date"].iloc[-1] - df.iloc[:-1]["date"].iloc[0]).days / 365, 1))
+                    hist_market_df = fetch_history("NEPSE", years=hist_years)
+                hist_model, hist_clean, _, hist_cols = train_model(
+                    data=df.iloc[:-1].copy(),
+                    symbol=symbol,
+                    market_data=hist_market_df,
+                    optimise=False,
+                    n_folds=min(5, max(3, len(df.iloc[:-1]) // 180)),
+                    random_state=seed,
+                )
+                bt_preds = hist_model.forecast(hist_clean, hist_cols, horizon=1)
+                bt_price = bt_preds[0].predicted_close
                 if symbol.upper() not in log_data:
                     log_data[symbol.upper()] = []
                 log_data[symbol.upper()].append({
@@ -783,7 +852,85 @@ def run_ml_analysis(
         if perf_table:
             print(tabulate(perf_table, headers=["Date AD", "Predicted", "Actual/LTP", "Error%"], tablefmt="simple"))
 
-    # ── Trading Signals (Legacy section removed in v5.0 Upgrade) ──────────
+    # ── Trading Signals ───────────────────────────────────────────────────────
+    if predictions:
+        # Error feedback + stability clamp (post-process forecast only)
+        try:
+            log_data = load_log()
+            completed = [
+                float(e["error_pct"])
+                for e in log_data.get(symbol.upper(), [])
+                if e.get("error_pct") is not None
+            ]
+            recent_error = float(np.mean(completed[-5:])) if completed else 0.0
+            if recent_error > 0:
+                mult = 0.98
+            elif recent_error < 0:
+                mult = 1.02
+            else:
+                mult = 1.0
+
+            for p in predictions:
+                if isinstance(p, dict):
+                    if "predicted_close" in p and p["predicted_close"] is not None:
+                        v = float(p["predicted_close"]) * mult
+                        p["predicted_close"] = float(np.clip(v, last_price * 0.90, last_price * 1.10))
+                    for k in ("low_band", "high_band"):
+                        if k in p and p[k] is not None:
+                            p[k] = float(np.clip(float(p[k]) * mult, last_price * 0.90, last_price * 1.10))
+                else:
+                    v = float(p.predicted_close) * mult
+                    p.predicted_close = float(np.clip(v, last_price * 0.90, last_price * 1.10))
+                    p.low_band = float(np.clip(float(p.low_band) * mult, last_price * 0.90, last_price * 1.10))
+                    p.high_band = float(np.clip(float(p.high_band) * mult, last_price * 0.90, last_price * 1.10))
+
+            if use_ml_success:
+                logger.info("ML prediction success")
+                logger.info("Model weights used: %s", ENSEMBLE_WEIGHTS)
+                p0 = predictions[0]
+                p0_val = p0.get("predicted_close") if isinstance(p0, dict) else getattr(p0, "predicted_close", None)
+                logger.info("Final adjusted prediction: %s", p0_val)
+        except Exception:
+            pass
+
+        strategies = suggest_strategy(trend_info, predictions, df_ind)
+
+        # Unified final decision (single signal)
+        try:
+            p5 = predictions[min(4, len(predictions) - 1)]
+            p5_close = p5.get("predicted_close") if isinstance(p5, dict) else getattr(p5, "predicted_close", None)
+            exp_5d = (float(p5_close) - float(last_price)) / (float(last_price) + 1e-9) * 100 if p5_close else 0.0
+        except Exception:
+            exp_5d = 0.0
+
+        p0 = predictions[0]
+        dir_prob = p0.get("direction_prob", 0.5) if isinstance(p0, dict) else getattr(p0, "direction_prob", 0.5)
+
+        # Illiquidity proxy from features (last row)
+        illiq_flag = 0.0
+        try:
+            if "illiquid_flag" in df_ind.columns:
+                illiq_flag = float(df_ind["illiquid_flag"].iloc[-1])
+        except Exception:
+            illiq_flag = 0.0
+
+        final = compute_final_decision(DecisionInputs(
+            direction_prob=float(dir_prob),
+            expected_ret_5d_pct=float(exp_5d),
+            regime=str(regime_info.get("regime", "NEUTRAL")),
+            regime_confidence=float(regime_info.get("confidence", 0.0)),
+            sentiment_score=float(sentiment.get("score", 0.0)),
+            trap_score=float(sm_report.get("trap_score", 0.0)),
+            volatility_pct=float(trend_info.get("volatility_pct", 0.0)),
+            illiquid_flag=float(illiq_flag),
+            technical_signals=strategies,
+        ))
+
+        print_section("Final Trade Decision (Unified)")
+        ac = Fore.GREEN if final.action == "BUY" else Fore.RED if final.action in ("SELL", "AVOID") else Fore.YELLOW
+        print(f"  Action      : {ac}{final.action}{Style.RESET_ALL}")
+        print(f"  Confidence  : {final.confidence*100:.0f}%")
+        print(f"  Rationale   : {final.rationale}")
 
         next_pred  = predictions[0]
         np_date = next_pred.get("date") if isinstance(next_pred, dict) else getattr(next_pred, "date", "")
@@ -894,9 +1041,10 @@ def _save_report(symbol, df, trend_info, predictions, sentiment, ml_report, anom
         "forecast": [vars(p) if hasattr(p, '__dict__') else p for p in predictions],
         "anomalies": anomalies,
         "ml_metrics": {
+            "target_name": ml_report.target_name if ml_report else None,
             "avg_mae": ml_report.avg_mae if ml_report else None,
             "avg_dir_acc": ml_report.avg_dir_acc if ml_report else None,
-            "avg_mape": ml_report.avg_mape if ml_report else None,
+            "avg_sharpe": ml_report.avg_sharpe if ml_report else None,
             "models_used": ml_report.models_used if ml_report else [],
         } if ml_report else None,
     }
@@ -926,7 +1074,7 @@ Examples:
   python nepse_live.py --symbol NABIL           # direct prediction
   python nepse_live.py --symbol UPPER --predict 10 --years 5
   python nepse_live.py --symbol NABIL --backtest
-  python nepse_live.py --symbol NABIL --no-ml   # statistical only (fast)
+  python nepse_live.py --symbol NABIL --no-ml   # deprecated flag (ignored)
   python nepse_live.py --list
         """,
     )
@@ -934,13 +1082,22 @@ Examples:
     parser.add_argument("--predict",  type=int, default=7, help="Forecast horizon 5-10 (default 7)")
     parser.add_argument("--years",    type=int, default=2, help="Years of history (default 2)")
     parser.add_argument("--backtest", action="store_true", help="Include walk-forward backtest")
-    parser.add_argument("--no-ml",    action="store_true", help="Skip ML training (fast)")
+    parser.add_argument("--no-ml",    action="store_true", help="Deprecated; the live CLI is ML-only now")
     parser.add_argument("--fast",     action="store_true", help="Fast ML mode (1yr data, no heavy optimization)")
     parser.add_argument("--list",     action="store_true", help="Print all NEPSE symbols and exit")
     parser.add_argument("--ollama",   action="store_true", help="Generate AI summary using local Ollama")
     parser.add_argument("--ollama-model", default="llama3", help="Ollama model name (default: llama3)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible results (default: 42)")
+    parser.add_argument("--debug", action="store_true", help="Show debug details (features, reasoning, deltas)")
     args = parser.parse_args()
 
+    # Guard against rare recursion crashes in some ML / pandas paths
+    try:
+        sys.setrecursionlimit(max(3000, sys.getrecursionlimit()))
+    except Exception:
+        pass
+
+    set_global_determinism(args.seed)
     banner()
     _print_market_status()
 
@@ -957,7 +1114,11 @@ Examples:
         return
 
     if args.symbol:
-        sym      = args.symbol.strip().upper()
+        try:
+            sym = resolve_symbol(args.symbol)
+        except ValueError as e:
+            print(f"\n  {Fore.RED}Error: {e}{Style.RESET_ALL}")
+            sys.exit(1)
         m        = companies[companies["symbol"].str.upper() == sym]
         selected = m.iloc[0].to_dict() if not m.empty else {"symbol": sym, "name": sym, "sector": "", "id": ""}
     else:
@@ -1002,6 +1163,11 @@ Examples:
 
     try:
         df = fetch_history(symbol, company_id=cid, years=y)
+        is_new_listing = len(df) < 60
+        if is_new_listing:
+            print(f"  {Fore.YELLOW}NEW LISTING DETECTED:{Style.RESET_ALL} Only {len(df)} trading rows. Using lighter settings.")
+            opt = False
+            trials = 3
         
         # Patch absolute latest price if market is open
         live_price = fetch_live_price(symbol)
@@ -1041,6 +1207,8 @@ Examples:
         n_trials=trials,
         use_ollama=args.ollama,
         ollama_model=args.ollama_model,
+        seed=args.seed,
+        debug=args.debug,
     )
 
     if not args.symbol:

@@ -25,10 +25,16 @@ from colorama import Fore, Style, init
 from tabulate import tabulate
 
 try:
-    from nepal_calendar import NepalMarketCalendar, ad_to_bs, get_bs_month_name
+    from nepal_calendar import NepalMarketCalendar, get_bs_month_name
     _CAL = NepalMarketCalendar(fetch_live=False)
 except ImportError:
     _CAL = None
+
+try:
+    from nepse_date_utils import ad_to_bs_ymd, validate_ad_bs_mapping
+    _HAS_BS_UTILS = True
+except Exception:
+    _HAS_BS_UTILS = False
 
 init(autoreset=True)
 
@@ -311,6 +317,9 @@ def detect_anomalies(df: pd.DataFrame, news_list: list = None) -> list:
 
 def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
     """
+    Deprecated: retained only for backward compatibility.
+    The production system now uses the unified ML pipeline in `pipeline.py`.
+
     Blended statistical prediction:
     1. Linear regression trend extrapolation (40%)
     2. Holt exponential smoothing (40%)
@@ -318,6 +327,11 @@ def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
     NEPSE ±10% circuit-breaker enforced per step.
     NEPSE Friday/Saturday closure enforced.
     """
+    warnings.warn(
+        "predict_prices() is deprecated; use the unified ML pipeline in pipeline.py.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     close = df["close"].dropna().values
     if len(close) < 10:
         raise ValueError("Need at least 10 data points to predict.")
@@ -358,14 +372,33 @@ def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
             d += pd.offsets.BDay(1)
             future_dates.append(d)
 
+    # Forecast realism fixes:
+    # - No forced crash bias
+    # - Limit first-day move to ±4%
+    # - Use decaying drift thereafter
+    drift = float(avg_daily_ret)
+    if not np.isfinite(drift):
+        drift = 0.0
+
     for i in range(n):
         pred_date = future_dates[i]
-        blended   = 0.40 * lr_preds[i] + 0.40 * es_preds[i] + 0.20 * mom_preds[i]
 
-        # Circuit breaker
-        blended = float(np.clip(blended, current_price * 0.90, current_price * 1.10))
-        band    = blended * recent_vol * 1.5
-        prev_p  = predictions[-1]["predicted_close"] if predictions else close[-1]
+        prev_p = predictions[-1]["predicted_close"] if predictions else float(close[-1])
+
+        if i == 0:
+            blended = 0.40 * lr_preds[i] + 0.40 * es_preds[i] + 0.20 * mom_preds[i]
+            shock = float((blended / (prev_p + 1e-9)) - 1.0)
+            shock = float(np.clip(shock, -0.04, 0.04))
+            blended = float(prev_p * (1.0 + shock))
+        else:
+            # t is 1-indexed in the decay term per spec
+            t = i + 1
+            blended = float(prev_p * (1.0 + drift * (0.95 ** t)))
+
+        # Circuit breaker (NEPSE realism)
+        blended = float(np.clip(blended, prev_p * 0.90, prev_p * 1.10))
+
+        band = blended * recent_vol * 1.5
         daily_change = (blended - prev_p) / (prev_p + 1e-9) * 100
 
         res = {
@@ -384,8 +417,10 @@ def predict_prices(df: pd.DataFrame, n: int = 7) -> list:
         if _CAL:
             try:
                 ad = pred_date.date() if hasattr(pred_date, "date") else pred_date
-                bs = ad_to_bs(ad)
-                res["bs_date"] = f"{bs[0]}-{bs[1]:02d}-{bs[2]:02d}"
+                if _HAS_BS_UTILS:
+                    validate_ad_bs_mapping(ad)
+                    y, m, d = ad_to_bs_ymd(ad)
+                    res["bs_date"] = f"{y}-{m:02d}-{d:02d}"
             except Exception:
                 pass
                 

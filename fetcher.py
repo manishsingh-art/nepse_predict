@@ -30,14 +30,25 @@ from pathlib import Path
 import requests
 import pandas as pd
 import numpy as np
+import difflib
 
 logger = logging.getLogger(__name__)
+
+# Some Windows/Python environments lack CA bundle for nepalstock.com; allow verify=False
+# requests in controlled places and silence urllib3 warnings to keep logs clean.
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
 
 # ── Cache ──────────────────────────────────────────────────────────────────────
 CACHE_DIR = Path(os.path.expanduser("~")) / ".nepse_cache"
 COMPANY_CACHE = CACHE_DIR / "companies_cache.csv"
 PRICE_CACHE_DIR = CACHE_DIR / "price_cache"
 NEWS_CACHE_DIR = CACHE_DIR / "news_cache"
+SYMBOLS_CACHE_FILE = Path(__file__).resolve().parent / "symbols_cache.json"
+SYMBOLS_CACHE_TTL_S = 24 * 60 * 60
 
 HEADERS = {
     "User-Agent": (
@@ -54,7 +65,15 @@ MEROLAGANI_CHART = (
     "&rangeStartDate={start_ts}&rangeEndDate={end_ts}&from=&isAdjust=1&currencyCode=NPR"
 )
 
-NEPALSTOCK_SECURITY_LIST = "https://nepalstock.com.np/api/nots/security?nonDelisted=true"
+NEPALSTOCK_SECURITY_LIST = "https://www.nepalstock.com/api/nots/security"
+NEPALSTOCK_SECURITY_LIST_FALLBACK = "https://nepalstock.com.np/api/nots/security?nonDelisted=true"
+MEROLAGANI_COMPANY_LIST = "https://merolagani.com/CompanyList.aspx"
+# Listed companies + bonds/debentures: one row per security with symbol + legal name
+_MEROLAGANI_LIST_ROW = re.compile(
+    r"href=['\"]/CompanyDetail\.aspx\?symbol=([^'\"]+)['\"][^>]*>\s*([^<]+?)\s*</a>\s*</td>\s*"
+    r"<td[^>]*>\s*([^<]+?)\s*</td>",
+    re.IGNORECASE | re.DOTALL,
+)
 NEPALSTOCK_HISTORY = (
     "https://nepalstock.com.np/api/nots/market/history/"
     "{id}?startDate={start}&endDate={end}&size=500&page=1"
@@ -75,6 +94,218 @@ COL_ALIASES = {
 def _ensure_dirs() -> None:
     for d in [CACHE_DIR, PRICE_CACHE_DIR, NEWS_CACHE_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+
+
+def _fuzzy_match(query: str, symbols: List[str]) -> Tuple[Optional[str], float]:
+    """
+    Return best (match, score 0..100) using lightweight difflib ratio.
+    """
+    q = (query or "").strip().upper()
+    if not q or not symbols:
+        return None, 0.0
+    best_sym, best_score = None, 0.0
+    for s in symbols:
+        score = difflib.SequenceMatcher(a=q, b=str(s).upper()).ratio() * 100.0
+        if score > best_score:
+            best_score = score
+            best_sym = str(s).upper()
+    return best_sym, float(best_score)
+
+
+def _read_symbols_cache() -> Optional[Dict[str, str]]:
+    try:
+        if not SYMBOLS_CACHE_FILE.exists():
+            return None
+        age = time.time() - SYMBOLS_CACHE_FILE.stat().st_mtime
+        if age > SYMBOLS_CACHE_TTL_S:
+            logger.info("Symbols cache miss (expired)")
+            return None
+        payload = json.loads(SYMBOLS_CACHE_FILE.read_text(encoding="utf-8"))
+        items = payload.get("symbols", payload)
+        if not isinstance(items, dict):
+            return None
+        out = {str(k).upper(): str(v) for k, v in items.items() if str(k).strip()}
+        logger.info("Symbols cache hit")
+        return out if out else None
+    except Exception:
+        return None
+
+
+def _write_symbols_cache(symbols: Dict[str, str]) -> None:
+    try:
+        SYMBOLS_CACHE_FILE.write_text(
+            json.dumps(
+                {
+                    "fetched_at": datetime.now().isoformat(timespec="seconds"),
+                    "source": "merged",
+                    "count": len(symbols),
+                    "symbols": symbols,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _sanitize_display_name(name: str, sym: str) -> str:
+    n = re.sub(r"\s+", " ", str(name or "").strip())
+    if not n or n.lower() in ("nan", "none", "nat"):
+        return sym
+    return n
+
+
+def _fetch_symbols_merolagani_company_list() -> Dict[str, str]:
+    """
+    Full NEPSE-listed securities (equities, bonds, debentures) from MeroLagani.
+    Official NEPSE JSON often returns 401 without browser/session auth; this source is public HTML.
+    """
+    out: Dict[str, str] = {}
+    r = robust_request(
+        MEROLAGANI_COMPANY_LIST,
+        timeout=45,
+        retries=2,
+        headers={**HEADERS, "Referer": "https://merolagani.com/"},
+    )
+    if r is None or r.status_code != 200:
+        return out
+    for m in _MEROLAGANI_LIST_ROW.finditer(r.text):
+        raw_sym = m.group(1).strip()
+        sym = raw_sym.upper()
+        if not sym:
+            continue
+        name = _sanitize_display_name(m.group(3), sym)
+        out[sym] = name
+    return out
+
+
+def _fetch_symbols_nepse_api() -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for url in (NEPALSTOCK_SECURITY_LIST, NEPALSTOCK_SECURITY_LIST_FALLBACK):
+        r = robust_request(url, timeout=20, retries=2, verify=False)
+        if r is None or r.status_code != 200:
+            continue
+        try:
+            data = r.json()
+        except Exception:
+            continue
+        items = None
+        if isinstance(data, dict):
+            if isinstance(data.get("body"), list):
+                items = data["body"]
+            elif isinstance(data.get("content"), list):
+                items = data["content"]
+            elif isinstance(data.get("data"), list):
+                items = data["data"]
+        if items is None:
+            items = data if isinstance(data, list) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sym = (item.get("symbol") or item.get("stockSymbol") or "").strip().upper()
+            if not sym:
+                continue
+            name = (
+                item.get("securityName")
+                or item.get("companyName")
+                or item.get("securityNameEnglish")
+                or item.get("stock_name")
+                or sym
+            )
+            out[sym] = _sanitize_display_name(name, sym)
+        if out:
+            break
+    return out
+
+
+def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
+    """
+    Fetch listed securities for NEPSE (equities + tradable bonds/debentures where listed).
+
+    Primary source: MeroLagani CompanyList (full HTML table — typically 500+ rows).
+    Merge: official API when reachable (often 401 without site auth).
+    Cache: symbols_cache.json, TTL 24h. Incomplete caches (< 200 symbols) are ignored so a bad
+    snapshot refreshes automatically.
+    """
+    if not force_refresh:
+        cached = _read_symbols_cache()
+        if cached and len(cached) >= 200:
+            logger.info("Total symbols loaded: %d", len(cached))
+            return cached
+        if cached is not None and len(cached) < 200:
+            logger.info("Symbols cache miss (incomplete snapshot: %d symbols)", len(cached))
+        elif cached is None:
+            logger.info("Symbols cache miss (no cache)")
+
+    symbols: Dict[str, str] = {}
+
+    ml = _fetch_symbols_merolagani_company_list()
+    if ml:
+        symbols.update(ml)
+        logger.info("Symbols source: merolagani CompanyList (%d securities)", len(ml))
+
+    api_syms = _fetch_symbols_nepse_api()
+    if api_syms:
+        added = 0
+        for sym, name in api_syms.items():
+            if sym not in symbols:
+                symbols[sym] = name
+                added += 1
+            elif symbols[sym] == sym and name != sym:
+                symbols[sym] = name
+        logger.info("Symbols source: NEPSE API merged (+%d new / updated names)", added)
+
+    # Last resort only if MeroLagani failed
+    if len(symbols) < 100 and COMPANY_CACHE.exists():
+        try:
+            df = pd.read_csv(COMPANY_CACHE)
+            if "symbol" in df.columns:
+                for _, row in df.iterrows():
+                    sym = str(row.get("symbol", "")).strip().upper()
+                    if not sym:
+                        continue
+                    raw = row.get("name", sym)
+                    if pd.isna(raw):
+                        name = sym
+                    else:
+                        name = _sanitize_display_name(raw, sym)
+                    symbols.setdefault(sym, name)
+            logger.info("Symbols source: disk companies_cache.csv fallback (%d total)", len(symbols))
+        except Exception:
+            pass
+
+    if len(symbols) < 100:
+        try:
+            r = robust_request("https://merolagani.com/StockQuote.aspx", timeout=15, retries=2)
+            if r and r.status_code == 200:
+                for sym in re.findall(r"symbol=([A-Z0-9][A-Z0-9./+-]{1,14})[\"']", r.text):
+                    symbols.setdefault(str(sym).upper(), str(sym).upper())
+        except Exception:
+            pass
+    if len(symbols) < 100:
+        try:
+            r = robust_request("https://www.sharesansar.com/today-share-price", timeout=15, retries=2)
+            if r and r.status_code == 200:
+                tables = pd.read_html(r.text)
+                for t in tables:
+                    cols = [str(c).lower() for c in t.columns]
+                    if any("symbol" in c or "ticker" in c for c in cols):
+                        t.columns = cols
+                        sym_col = next(c for c in cols if "symbol" in c or "ticker" in c)
+                        for sym in t[sym_col].astype(str).str.upper():
+                            if 2 <= len(sym) <= 16 and sym != "NAN":
+                                symbols.setdefault(sym, sym)
+        except Exception:
+            pass
+
+    if symbols:
+        _write_symbols_cache(symbols)
+    logger.info("Total symbols loaded: %d", len(symbols))
+    return symbols
 
 
 def robust_request(
@@ -221,6 +452,41 @@ def fetch_company_list() -> pd.DataFrame:
             pass
 
     return _builtin_company_list()
+
+
+def resolve_symbol(symbol: str) -> str:
+    sym = (symbol or "").strip().upper()
+    symbols = fetch_nepse_symbols()
+    if sym in symbols:
+        return sym
+
+    match, score = _fuzzy_match(sym, list(symbols.keys()))
+    if match and score > 90:
+        return match
+
+    # New listing handling: try direct price fetch, then add to cache
+    try:
+        price = fetch_live_price(sym)
+        if price is not None and float(price) > 0:
+            logger.info("NEW LISTING DETECTED")
+            symbols[sym] = symbols.get(sym, sym)
+            _write_symbols_cache(symbols)
+            return sym
+    except Exception:
+        pass
+
+    # Last-resort validation: try fetching any history (still "direct fetch")
+    try:
+        df = fetch_history(sym, years=1)
+        if df is not None and not df.empty and len(df) >= 5:
+            logger.info("NEW LISTING DETECTED")
+            symbols[sym] = symbols.get(sym, sym)
+            _write_symbols_cache(symbols)
+            return sym
+    except Exception:
+        pass
+
+    raise ValueError(f"Symbol {sym} not found (new listing?)")
 
 
 def _builtin_company_list() -> pd.DataFrame:

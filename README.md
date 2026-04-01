@@ -1,104 +1,128 @@
-# NEPSE Predictor v6.1 (Quantum Advanced Analytics) 🚀
+# NEPSE Predictor
 
-An elite, regime-adaptive intelligence engine for the Nepal Stock Exchange (NEPSE). Built for low-liquidity, sentiment-driven markets — v6.1 extends v6.0's profit-optimized core with advanced volatility modeling, ATR-based risk management, and NLP-driven sentiment analysis.
+Machine-learning pipeline for the Nepal Stock Exchange (NEPSE): historical fetch, feature engineering, regime-aware ensemble models, optional floorsheet “smart money” signals, and JSON reports. Intended for **research and education**, not trading advice.
 
-## 🌟 Key Features
+## What it does
 
-### v6.0 — Core Intelligence
--   **Smart Money Intelligence**: Real-time floorsheet scraping with **Broker HHI (Concentration Index)**, hidden accumulation detection, and **Manipulation Trap Scores** (0–100).
--   **Regime-Aware Meta-Learning**: Classifies 4 market phases (`BULL`, `BEAR`, `SIDEWAYS`, `MANIPULATION`) with regime-specific model "heads".
--   **Behavioral Feature Engineering**: FOMO Index and Panic Index to capture retail sentiment extremes.
--   **Realism Engine v2**: Exponential Growth Penalty + Support/Resistance gravity for realistic forecasts.
--   **Sharpe-Optimized Ensemble**: Hyperparameter tuning (Optuna) prioritizes Sharpe Ratio over raw MAE.
+- Pulls price history and related context, builds technical and calendar-aware features, and runs an ensemble (LightGBM, XGBoost, scikit-learn) with optional Optuna tuning.
+- Detects market regime, flags anomalies (including news-linked context when headlines are available), and suggests strategy-style outputs with ATR-based risk framing.
+- Optional **Ollama** integration for headline sentiment and an AI narrative summary (`--ollama`).
+- Optional **EnhancedModel** path for experimenting with extra signals via a small plugin-style API (`enhanced_model_demo.py`).
 
-### v6.1 — Advanced Analytics
--   **GARCH Volatility Clustering** (`garch_vol`, `vol_of_vol`): Detects volatility regime changes before they hit price.
--   **Price-Volume Divergence** (`pv_divergence_score`): Flags exhaustion moves where volume doesn't confirm price.
--   **ATR-Based Risk Management**: Stop-loss = 1.5× ATR, Take-Profit = 2.5× ATR — fully dynamic per market conditions.
--   **Volatility-Adjusted Position Sizing**: Auto-scales trade size based on predicted risk and directional confidence.
--   **NLP Sentiment via Ollama**: `analyze_sentiment_headlines()` uses Llama3 to score news sentiment (-1.0 to +1.0) with structured JSON output.
+## Feature highlights (by version)
 
----
+**Core (v6.0)**  
+Smart-money style floorsheet analysis (broker concentration / HHI, trap-style scores), regime detection (`BULL` / `BEAR` / `SIDEWAYS` / `MANIPULATION`), behavioral features (e.g. FOMO / panic-style indices), and a Sharpe-oriented ensemble objective.
 
-## 🛠 Setup & Installation
+**Advanced analytics (v6.1)**  
+GARCH-style volatility features, price–volume divergence, ATR-based stop/take-profit distances, volatility-aware sizing context, and structured NLP sentiment when Ollama is enabled.
 
-### 1. Requirements
+**Resilience and reporting (v6.2)**  
+Stronger handling around model failures and missing Ollama, anomaly detection correlated with news categories when available, and clearer surfacing of news-linked anomalies in live output.
+
+**Adaptive signal layer (current)**  
+Multi-step entry confirmation, explicit regime-aware trading behavior, volatility-adjusted sizing, drawdown-aware execution throttling, richer trade diagnostics, and buy-and-hold alpha benchmarking in the ML backtest.
+
+## Requirements
+
+- Python 3.10+ recommended  
+- Dependencies: see `requirements.txt` (pandas, numpy, scikit-learn, lightgbm, xgboost, optuna, matplotlib, colorama, tabulate, requests, lxml, beautifulsoup4).
+
+### Install
+
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. (Optional) AI / NLP Setup
+On Linux or macOS, activate with `source .venv/bin/activate`.
+
+### Optional: Ollama (sentiment + AI summary)
+
 ```bash
-# Install Ollama and pull Llama3 for NLP sentiment & AI analyst
 ollama pull llama3
 ```
 
----
+If Ollama is not running, the pipeline is designed to fall back without blocking the rest of the run.
 
-## 🚀 How to Run
+## How to run
 
-### Standard (ML Ensemble)
+### Interactive menu
+
+```bash
+python nepse_live.py
+```
+
+### Single symbol (main CLI)
+
+| Flag | Purpose |
+|------|--------|
+| `--symbol SYM` | Ticker (e.g. `NABIL`, `NTC`) |
+| `--predict N` | Forecast horizon in Nepal trading sessions (default `7`, typically 5–10) |
+| `--years N` | Years of history (default `2`) |
+| `--backtest` | Include walk-forward backtest |
+| `--fast` | Shorter history / lighter run (about one year, less heavy optimization) |
+| `--no-ml` | Skip ML; statistical path only |
+| `--ollama` | Enable Ollama sentiment + analyst summary |
+| `--ollama-model NAME` | Model name (default `llama3`) |
+| `--seed N` | Reproducibility seed (default `42`) |
+| `--debug` | Extra diagnostic output |
+| `--list` | Print symbols and exit |
+
+Examples:
+
 ```bash
 python nepse_live.py --symbol NABIL --predict 7
-```
-
-### AI Enhanced (With Ollama — NLP Sentiment + Analyst Summary)
-```bash
+python nepse_live.py --symbol NABIL --years 5 --backtest
 python nepse_live.py --symbol NABIL --ollama --ollama-model llama3
-```
-
-### Fast Analysis (1-year data, quick turnaround)
-```bash
 python nepse_live.py --symbol SNLI --fast
+python nepse_live.py --symbol NIFRA --no-ml
 ```
 
----
+### Batch predictions (`run_all.py`)
 
-## 🧩 EnhancedModel (v2.1) — Modular “Feature Plugins” + Decision Engine
+Runs many symbols in parallel and prints JSON; also writes `predictions_log-YYYY-MM-DD.json`.
 
-If you want to experiment with **leading indicators**, **smart-money context**, **index dependency**, and **news/sector sentiment** *without editing the core ensemble*, use `EnhancedModel`.
+```bash
+python run_all.py
+python run_all.py --symbols NABIL NTC
+python run_all.py --workers 8 --no-ml
+```
 
-- **What it is**: a small registry that lets you add/compute extra signals from any dict-like context.
-- **What it’s not**: it does not replace the ML ensemble in `models.py`; it’s meant to *compose* with your existing pipeline.
+Default worker count is `8` (adjust with `--workers`).
 
-### Run the demo
+### EnhancedModel demo
 
 ```bash
 python enhanced_model_demo.py
 ```
 
-### Typical integration point
+Use this to experiment with `EnhancedModel.compute_features`, `calculate_confidence`, and `decision_engine` without changing the core ensemble in `models.py`.
 
-Use it after you’ve already computed your normal pipeline outputs (OHLCV features, floorsheet smart money, NEPSE index features, sentiment score). Package those into a `context` dict and call:
+## Outputs
 
-- `EnhancedModel.compute_features(context)`
-- `EnhancedModel.calculate_confidence(...)`
-- `EnhancedModel.decision_engine(...)`
+- **`reports/`** — Per-run JSON reports (metrics, bands, anomalies, etc.).
+- **`predictions_log-YYYY-MM-DD.json`** — Rolling log of predicted vs actual closes when you use batch or repeated runs.
+- **Terminal** — Regime, smart-money summaries, SL/TP style levels, optional Ollama block.
+- **ML backtest** — Strategy return, drawdown, exposure, buy-and-hold benchmark comparison, and trade-level diagnostics such as signal strength, regime, volatility, and entry/exit reasons.
 
-## ✅ Verification (v6.1/v6.2)
+## Calendar and data
 
-End-to-end verification was run in **Fast mode** (no Ollama required):
+Trading-date logic uses Nepal-market calendar helpers (`nepse_market_calendar.py`, `nepal_calendar.py`, holiday CSVs such as `nepse_holidays.csv`). Symbol lists may be cached (e.g. `symbols_cache.json`) to limit repeated API calls.
 
-- **Command**: `python nepse_live.py --symbol SNLI --fast`
-- **Status**: Exit 0, ML training succeeded (LightGBM may be skipped automatically if unsupported on your local build)
-- **Example metrics (SNLI, 1y, 2026-03-26)**:
-  - **Avg directional accuracy**: ~56.0%
-  - **Avg MAE**: ~27,942.12 (note: fold metrics can vary by data/source)
-  - **Forecast horizon**: 7 Nepal trading sessions
+## Tests
 
----
+```bash
+python test_calendar_and_determinism.py
+```
 
-## 📊 Output Explained
+Other small scripts (`test_nepse_live.py`, `test_live.py`) are ad hoc checks; use them if you are validating fetch or live paths on your machine.
 
--   **Terminal**: Regime Phase, Trap Index, Broker HHI, ATR-based SL/TP, and volatility-adjusted position weight.
--   **Reports (`/reports`)**: JSON with full v6.1 metrics — probabilistic bands, divergence scores, and anomalies.
--   **Logs (`predictions_log-DATE.json`)**: Rolling prediction accuracy tracking.
+## Verification note
 
----
+End-to-end checks have been run in **fast** mode (e.g. `python nepse_live.py --symbol SNLI --fast`). Reported directional accuracy and MAE **depend on symbol, date range, and data source**; treat any single run as illustrative, not a guarantee of future performance.
 
-## ⚠️ Disclaimer
-For **educational and research purposes only**. Stock market predictions are probabilistic and carry inherent risk. Always use stop-losses. This is not financial advice.
+## Disclaimer
 
-**Directional Accuracy Target**: 70–75% (v6.1 Quantum Advanced Analytics Engine).
+This project is for **education and research only**. Markets are risky; predictions are uncertain. This is **not financial advice**. Always do your own due diligence and risk management.
