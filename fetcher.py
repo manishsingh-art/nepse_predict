@@ -23,14 +23,18 @@ import time
 import json
 import hashlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
+import io
 import requests
 import pandas as pd
 import numpy as np
 import difflib
+
+from cache import CACHE_DIR, get_cache_path, is_cache_fresh, load_json, load_pickle, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +47,17 @@ except Exception:
     pass
 
 # ── Cache ──────────────────────────────────────────────────────────────────────
-CACHE_DIR = Path(os.path.expanduser("~")) / ".nepse_cache"
-COMPANY_CACHE = CACHE_DIR / "companies_cache.csv"
-PRICE_CACHE_DIR = CACHE_DIR / "price_cache"
-NEWS_CACHE_DIR = CACHE_DIR / "news_cache"
-SYMBOLS_CACHE_FILE = Path(__file__).resolve().parent / "symbols_cache.json"
+COMPANY_CACHE = get_cache_path("companies_cache.csv")
+LEGACY_COMPANY_CACHE = Path(os.path.expanduser("~")) / ".nepse_cache" / "companies_cache.csv"
+SYMBOLS_CACHE_FILE = get_cache_path("symbols_cache.json")
+COMPANY_IDS_CACHE_FILE = get_cache_path("company_ids_cache.json")
 SYMBOLS_CACHE_TTL_S = 24 * 60 * 60
+COMPANY_CACHE_TTL_S = 24 * 60 * 60
+PRICE_CACHE_TTL_S = 60 * 60
+LIVE_PRICE_CACHE_TTL_S = 120
+FLOORSHEET_CACHE_TTL_S = 15 * 60
+NEWS_CACHE_TTL_S = 2 * 60 * 60
+MARKET_LIVE_CACHE_TTL_S = 180
 
 HEADERS = {
     "User-Agent": (
@@ -68,6 +77,7 @@ MEROLAGANI_CHART = (
 NEPALSTOCK_SECURITY_LIST = "https://www.nepalstock.com/api/nots/security"
 NEPALSTOCK_SECURITY_LIST_FALLBACK = "https://nepalstock.com.np/api/nots/security?nonDelisted=true"
 MEROLAGANI_COMPANY_LIST = "https://merolagani.com/CompanyList.aspx"
+MEROLAGANI_AUTOSUGGEST = "https://merolagani.com/handlers/AutoSuggestHandler.ashx?type=Company"
 # Listed companies + bonds/debentures: one row per security with symbol + legal name
 _MEROLAGANI_LIST_ROW = re.compile(
     r"href=['\"]/CompanyDetail\.aspx\?symbol=([^'\"]+)['\"][^>]*>\s*([^<]+?)\s*</a>\s*</td>\s*"
@@ -92,8 +102,65 @@ COL_ALIASES = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _ensure_dirs() -> None:
-    for d in [CACHE_DIR, PRICE_CACHE_DIR, NEWS_CACHE_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _history_cache_path(symbol: str, years: int) -> Path:
+    return get_cache_path(f"{symbol.upper()}_{years}y_history.pkl")
+
+
+def _legacy_history_cache_path(symbol: str, years: int) -> Path:
+    return Path(os.path.expanduser("~")) / ".nepse_cache" / "price_cache" / f"{symbol.upper()}_{years}y.pkl"
+
+
+def _live_price_cache_path(symbol: str) -> Path:
+    return get_cache_path(f"{symbol.upper()}_live_price.json")
+
+
+def _floorsheet_cache_path(symbol: str) -> Path:
+    return get_cache_path(f"{symbol.upper()}_floorsheet.pkl")
+
+
+def _news_cache_path(symbol: str, days_back: int) -> Path:
+    return get_cache_path(f"{symbol.upper()}_{days_back}d_sentiment.json")
+
+
+def _market_live_cache_path() -> Path:
+    return get_cache_path("market_live_status.json")
+
+
+def _load_pickle_with_fallback(primary: Path, legacy: Optional[Path] = None, max_age_seconds: Optional[int] = None):
+    payload = load_pickle(primary, max_age_seconds=max_age_seconds)
+    if payload is not None:
+        return payload, "cache:fresh"
+    if primary.exists():
+        payload = load_pickle(primary, max_age_seconds=None)
+        if payload is not None:
+            return payload, "cache:stale"
+    if legacy is not None and legacy.exists():
+        payload = load_pickle(legacy, max_age_seconds=max_age_seconds)
+        if payload is not None:
+            return payload, "cache:fresh-legacy"
+        payload = load_pickle(legacy, max_age_seconds=None)
+        if payload is not None:
+            return payload, "cache:stale-legacy"
+    return None, None
+
+
+def _coerce_return(payload, source: str, return_source: bool):
+    return (payload, source) if return_source else payload
+
+
+def _fetch_rss_articles(feed_url: str, symbol: str, cutoff: datetime) -> List[Dict[str, Any]]:
+    articles: List[Dict[str, Any]] = []
+    try:
+        r = robust_request(feed_url, timeout=10, retries=2)
+        if r is None:
+            return articles
+        _parse_rss_feed(r.text, symbol, cutoff, articles)
+    except Exception:
+        return []
+    return articles
 
 
 def _fuzzy_match(query: str, symbols: List[str]) -> Tuple[Optional[str], float]:
@@ -155,6 +222,92 @@ def _sanitize_display_name(name: str, sym: str) -> str:
     if not n or n.lower() in ("nan", "none", "nat"):
         return sym
     return n
+
+
+def _read_company_ids_cache() -> Dict[str, str]:
+    """Return cached {SYMBOL: merolagani_id} mapping, or empty dict if missing/stale."""
+    try:
+        if not COMPANY_IDS_CACHE_FILE.exists():
+            return {}
+        age = time.time() - COMPANY_IDS_CACHE_FILE.stat().st_mtime
+        if age > SYMBOLS_CACHE_TTL_S:
+            return {}
+        payload = json.loads(COMPANY_IDS_CACHE_FILE.read_text(encoding="utf-8"))
+        ids = payload.get("ids", payload)
+        if not isinstance(ids, dict):
+            return {}
+        return {str(k).upper(): str(v) for k, v in ids.items() if str(k).strip()}
+    except Exception:
+        return {}
+
+
+def _write_company_ids_cache(ids: Dict[str, str]) -> None:
+    try:
+        COMPANY_IDS_CACHE_FILE.write_text(
+            json.dumps(
+                {
+                    "fetched_at": datetime.now().isoformat(timespec="seconds"),
+                    "count": len(ids),
+                    "ids": ids,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def get_company_id(symbol: str) -> str:
+    """
+    Return the MeroLagani internal company ID for `symbol`, or empty string if unknown.
+    Used to construct NepalStock history API URLs.
+    """
+    ids = _read_company_ids_cache()
+    return ids.get(symbol.strip().upper(), "")
+
+
+def _fetch_symbols_autosuggest() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    Fetch ALL listed NEPSE securities from MeroLagani's AutoSuggest JSON endpoint.
+    Returns (symbols_dict, ids_dict) where:
+      symbols_dict = {SYMBOL: company_name}
+      ids_dict     = {SYMBOL: merolagani_internal_id}
+
+    This endpoint returns 5 000+ securities (equities, bonds, debentures, mutual funds)
+    in a single lightweight JSON call, far more complete than the HTML CompanyList scrape.
+    Response item format: {"l": "SYMBOL (Company Name)", "v": "1234", "d": "SYMBOL"}
+    """
+    symbols: Dict[str, str] = {}
+    ids: Dict[str, str] = {}
+    r = robust_request(
+        MEROLAGANI_AUTOSUGGEST,
+        timeout=30,
+        retries=2,
+        headers={**HEADERS, "Referer": "https://merolagani.com/"},
+    )
+    if r is None or r.status_code != 200:
+        return symbols, ids
+    try:
+        items = r.json()
+        if not isinstance(items, list):
+            return symbols, ids
+        for item in items:
+            sym = str(item.get("d") or "").strip().upper()
+            if not sym:
+                continue
+            label = str(item.get("l") or "").strip()
+            # label format: "SYMBOL (Company Name)" — extract company name
+            m = re.match(r"[^\(]+\((.+)\)\s*$", label)
+            name = _sanitize_display_name(m.group(1) if m else label, sym)
+            company_id = str(item.get("v") or "").strip()
+            symbols[sym] = name
+            if company_id:
+                ids[sym] = company_id
+    except Exception as exc:
+        logger.debug("AutoSuggest fetch error: %s", exc)
+    return symbols, ids
 
 
 def _fetch_symbols_merolagani_company_list() -> Dict[str, str]:
@@ -224,12 +377,14 @@ def _fetch_symbols_nepse_api() -> Dict[str, str]:
 
 def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
     """
-    Fetch listed securities for NEPSE (equities + tradable bonds/debentures where listed).
+    Fetch ALL listed NEPSE securities (equities, bonds, debentures, mutual funds).
 
-    Primary source: MeroLagani CompanyList (full HTML table — typically 500+ rows).
-    Merge: official API when reachable (often 401 without site auth).
-    Cache: symbols_cache.json, TTL 24h. Incomplete caches (< 200 symbols) are ignored so a bad
-    snapshot refreshes automatically.
+    Primary source: MeroLagani AutoSuggest JSON API — returns 5 000+ securities in one
+    lightweight call, including newly listed stocks. Also extracts internal company IDs
+    used for NepalStock history API lookups.
+    Fallback: MeroLagani CompanyList HTML, then NEPSE API, then StockQuote/ShareSansar.
+    Cache: symbols_cache.json + company_ids_cache.json, TTL 24 h.
+    Incomplete caches (< 200 symbols) are ignored so a bad snapshot auto-refreshes.
     """
     if not force_refresh:
         cached = _read_symbols_cache()
@@ -242,12 +397,31 @@ def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
             logger.info("Symbols cache miss (no cache)")
 
     symbols: Dict[str, str] = {}
+    ids: Dict[str, str] = {}
 
-    ml = _fetch_symbols_merolagani_company_list()
-    if ml:
-        symbols.update(ml)
-        logger.info("Symbols source: merolagani CompanyList (%d securities)", len(ml))
+    # ── Primary: AutoSuggest JSON (fastest, most complete — 5 000+ entries) ───
+    as_syms, as_ids = _fetch_symbols_autosuggest()
+    if as_syms:
+        symbols.update(as_syms)
+        ids.update(as_ids)
+        logger.info(
+            "Symbols source: MeroLagani AutoSuggest (%d securities, %d with IDs)",
+            len(as_syms),
+            len(as_ids),
+        )
 
+    # ── Fallback: CompanyList HTML (if AutoSuggest is unreachable) ─────────────
+    if len(symbols) < 200:
+        ml = _fetch_symbols_merolagani_company_list()
+        if ml:
+            added = 0
+            for sym, name in ml.items():
+                if sym not in symbols:
+                    symbols[sym] = name
+                    added += 1
+            logger.info("Symbols source: MeroLagani CompanyList (+%d new securities)", added)
+
+    # ── Merge: official NEPSE API (may fill name gaps; often returns 401) ─────
     api_syms = _fetch_symbols_nepse_api()
     if api_syms:
         added = 0
@@ -257,9 +431,10 @@ def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
                 added += 1
             elif symbols[sym] == sym and name != sym:
                 symbols[sym] = name
-        logger.info("Symbols source: NEPSE API merged (+%d new / updated names)", added)
+        if added:
+            logger.info("Symbols source: NEPSE API merged (+%d new)", added)
 
-    # Last resort only if MeroLagani failed
+    # ── Last resort: local CSV / StockQuote regex / ShareSansar ───────────────
     if len(symbols) < 100 and COMPANY_CACHE.exists():
         try:
             df = pd.read_csv(COMPANY_CACHE)
@@ -269,10 +444,7 @@ def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
                     if not sym:
                         continue
                     raw = row.get("name", sym)
-                    if pd.isna(raw):
-                        name = sym
-                    else:
-                        name = _sanitize_display_name(raw, sym)
+                    name = sym if pd.isna(raw) else _sanitize_display_name(raw, sym)
                     symbols.setdefault(sym, name)
             logger.info("Symbols source: disk companies_cache.csv fallback (%d total)", len(symbols))
         except Exception:
@@ -286,11 +458,12 @@ def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
                     symbols.setdefault(str(sym).upper(), str(sym).upper())
         except Exception:
             pass
+
     if len(symbols) < 100:
         try:
             r = robust_request("https://www.sharesansar.com/today-share-price", timeout=15, retries=2)
             if r and r.status_code == 200:
-                tables = pd.read_html(r.text)
+                tables = pd.read_html(io.StringIO(r.text))
                 for t in tables:
                     cols = [str(c).lower() for c in t.columns]
                     if any("symbol" in c or "ticker" in c for c in cols):
@@ -304,6 +477,8 @@ def fetch_nepse_symbols(force_refresh: bool = False) -> Dict[str, str]:
 
     if symbols:
         _write_symbols_cache(symbols)
+    if ids:
+        _write_company_ids_cache(ids)
     logger.info("Total symbols loaded: %d", len(symbols))
     return symbols
 
@@ -380,6 +555,15 @@ def _to_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
 def fetch_company_list() -> pd.DataFrame:
     """Return DataFrame[symbol, name, sector, id]. Caches to disk."""
     _ensure_dirs()
+    try:
+        if COMPANY_CACHE.exists() and is_cache_fresh(COMPANY_CACHE, COMPANY_CACHE_TTL_S):
+            df = pd.read_csv(COMPANY_CACHE)
+            if "symbol" in df.columns and len(df) > 20:
+                df["symbol"] = df["symbol"].astype(str).str.upper()
+                return df
+    except Exception:
+        pass
+
     all_stocks: Dict[str, dict] = {}
 
     # Source 1: NEPSE official API
@@ -424,7 +608,7 @@ def fetch_company_list() -> pd.DataFrame:
         try:
             r = robust_request("https://www.sharesansar.com/today-share-price")
             if r:
-                tables = pd.read_html(r.text)
+                tables = pd.read_html(io.StringIO(r.text))
                 for t in tables:
                     cols = [str(c).lower() for c in t.columns]
                     if any("symbol" in c or "ticker" in c for c in cols):
@@ -442,14 +626,15 @@ def fetch_company_list() -> pd.DataFrame:
         return df
 
     # Local cache fallback
-    if COMPANY_CACHE.exists():
-        try:
-            df = pd.read_csv(COMPANY_CACHE)
-            df["symbol"] = df["symbol"].astype(str).str.upper()
-            if len(df) > 20:
-                return df
-        except Exception:
-            pass
+    for cache_file in (COMPANY_CACHE, LEGACY_COMPANY_CACHE):
+        if cache_file.exists():
+            try:
+                df = pd.read_csv(cache_file)
+                df["symbol"] = df["symbol"].astype(str).str.upper()
+                if len(df) > 20:
+                    return df
+            except Exception:
+                pass
 
     return _builtin_company_list()
 
@@ -489,41 +674,54 @@ def resolve_symbol(symbol: str) -> str:
     raise ValueError(f"Symbol {sym} not found (new listing?)")
 
 
+def is_known_symbol_local(symbol: str) -> bool:
+    """
+    Fast local-only symbol check using only on-disk caches — never hits the network.
+    Checks AutoSuggest symbols cache (1 600+ entries) and company_ids cache.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return False
+
+    cached = _read_symbols_cache()
+    if cached and sym in cached:
+        return True
+
+    ids = _read_company_ids_cache()
+    if ids and sym in ids:
+        return True
+
+    for cache_file in (COMPANY_CACHE, LEGACY_COMPANY_CACHE):
+        if cache_file.exists():
+            try:
+                df = pd.read_csv(cache_file, usecols=["symbol"])
+                if sym in set(df["symbol"].astype(str).str.upper()):
+                    return True
+            except Exception:
+                pass
+
+    return False
+
+
 def _builtin_company_list() -> pd.DataFrame:
-    stocks = [
-        ("NABIL", "Nabil Bank Ltd", "Commercial Banks"),
-        ("NICA", "NIC Asia Bank Ltd", "Commercial Banks"),
-        ("SCB", "Standard Chartered Bank Nepal", "Commercial Banks"),
-        ("SANIMA", "Sanima Bank Ltd", "Commercial Banks"),
-        ("MBL", "Machhapuchchhre Bank Ltd", "Commercial Banks"),
-        ("PRVU", "Prabhu Bank Ltd", "Commercial Banks"),
-        ("NBL", "Nepal Bank Ltd", "Commercial Banks"),
-        ("EBL", "Everest Bank Ltd", "Commercial Banks"),
-        ("HBL", "Himalayan Bank Ltd", "Commercial Banks"),
-        ("KBL", "Kumari Bank Ltd", "Commercial Banks"),
-        ("NIMB", "Nepal Investment Mega Bank Ltd", "Commercial Banks"),
-        ("ADBL", "Agricultural Development Bank Ltd", "Commercial Banks"),
-        ("GBIME", "Global IME Bank Ltd", "Commercial Banks"),
-        ("NMB", "NMB Bank Ltd", "Commercial Banks"),
-        ("PCBL", "Prime Commercial Bank Ltd", "Commercial Banks"),
-        ("UPPER", "Upper Tamakoshi Hydropower", "Hydropower"),
-        ("NHPC", "National Hydropower Company", "Hydropower"),
-        ("CHCL", "Chilime Hydropower Co.", "Hydropower"),
-        ("BPCL", "Butwal Power Company Ltd", "Hydropower"),
-        ("NTC", "Nepal Telecom", "Telecom"),
-        ("NLIC", "National Life Insurance", "Life Insurance"),
-        ("LICN", "Life Insurance Corporation Nepal", "Life Insurance"),
-        ("CBBL", "Chhimek Bikas Bank Ltd", "Microfinance"),
-        ("SWBBL", "Swabalamban Bikas Bank Ltd", "Microfinance"),
-        ("CIT", "Citizen Investment Trust", "Others"),
-        ("UNL", "Unilever Nepal Ltd", "Manufacturing"),
-    ]
-    return pd.DataFrame(stocks, columns=["symbol", "name", "sector"]).assign(id="")
+    """
+    Returns an empty DataFrame — all symbol data now comes dynamically from
+    the MeroLagani AutoSuggest API via fetch_nepse_symbols() / _fetch_symbols_autosuggest().
+    This stub exists only for backward compatibility with callers.
+    """
+    return pd.DataFrame(columns=["symbol", "name", "sector", "id"])
 
 
 # ── Historical Price Data ─────────────────────────────────────────────────────
 
-def fetch_history(symbol: str, company_id: str = "", years: int = 5) -> pd.DataFrame:
+def fetch_history(
+    symbol: str,
+    company_id: str = "",
+    years: int = 5,
+    return_source: bool = False,
+    max_age_seconds: int = PRICE_CACHE_TTL_S,
+    allow_company_lookup: bool = True,
+) -> pd.DataFrame | Tuple[pd.DataFrame, str]:
     """
     Return cleaned OHLCV DataFrame for `symbol` covering `years` years.
     Tries sources in order: MeroLagani → NepalStock → ShareSansar → cache.
@@ -532,24 +730,49 @@ def fetch_history(symbol: str, company_id: str = "", years: int = 5) -> pd.DataF
     end_dt = datetime.now()
     start_dt = end_dt - timedelta(days=365 * years)
 
-    # Check disk cache (fresh within 1 hour)
-    cache_file = PRICE_CACHE_DIR / f"{symbol.upper()}_{years}y.pkl"
-    if cache_file.exists():
-        age = time.time() - cache_file.stat().st_mtime
-        if age < 3600:
-            try:
-                df = pd.read_pickle(cache_file)
-                logger.debug("Price cache hit for %s", symbol)
-                return df
-            except Exception:
-                pass
+    cache_file = _history_cache_path(symbol, years)
+    legacy_cache_file = _legacy_history_cache_path(symbol, years)
+    cached_df, cache_source = _load_pickle_with_fallback(
+        cache_file,
+        legacy=legacy_cache_file,
+        max_age_seconds=max_age_seconds,
+    )
+    stale_df = None
+    if cached_df is not None:
+        logger.debug("Price cache hit for %s", symbol)
+        if cache_source and cache_source.startswith("cache:fresh"):
+            return _coerce_return(cached_df, cache_source, return_source)
+        stale_df = cached_df
+
+    # New listings may have very few rows; accept >= 5 from any source and
+    # keep the best (most rows) across all sources before deciding.
+    MIN_ROWS_SUFFICIENT = 20   # prefer sources with this many rows or more
+    MIN_ROWS_ACCEPT = 5        # accept new-listing data with at least this many rows
+
+    best_df: Optional[pd.DataFrame] = None
+    best_source: str = ""
+
+    def _candidate(candidate_df: Optional[pd.DataFrame], source: str) -> bool:
+        """Return True if this candidate is good enough to use immediately."""
+        nonlocal best_df, best_source
+        if candidate_df is None or len(candidate_df) < MIN_ROWS_ACCEPT:
+            return False
+        if best_df is None or len(candidate_df) > len(best_df):
+            best_df = candidate_df
+            best_source = source
+        return len(candidate_df) >= MIN_ROWS_SUFFICIENT
 
     df = _fetch_merolagani(symbol, start_dt, end_dt)
-    if df is not None and len(df) >= 20:
-        df.to_pickle(cache_file)
-        return df
+    if _candidate(df, "merolagani") and best_df is not None:
+        best_df.to_pickle(cache_file)
+        return _coerce_return(best_df, best_source, return_source)
 
-    if not company_id:
+    if allow_company_lookup and not company_id:
+        # Fast path: use the ID cached from the AutoSuggest API (no HTTP round-trip)
+        company_id = get_company_id(symbol)
+        if company_id:
+            logger.debug("Company ID for %s resolved from AutoSuggest cache: %s", symbol, company_id)
+    if allow_company_lookup and not company_id:
         try:
             companies = fetch_company_list()
             m = companies[companies["symbol"].str.upper() == symbol.upper()]
@@ -560,24 +783,27 @@ def fetch_history(symbol: str, company_id: str = "", years: int = 5) -> pd.DataF
 
     if company_id:
         df = _fetch_nepalstock(company_id, start_dt, end_dt)
-        if df is not None and len(df) >= 20:
-            df.to_pickle(cache_file)
-            return df
+        if _candidate(df, "nepalstock") and best_df is not None and len(best_df) >= MIN_ROWS_SUFFICIENT:
+            best_df.to_pickle(cache_file)
+            return _coerce_return(best_df, best_source, return_source)
 
     df = _fetch_sharesansar(symbol)
-    if df is not None and len(df) >= 20:
-        df.to_pickle(cache_file)
-        return df
+    _candidate(df, "sharesansar")
+
+    # Return the best result we found (even if it's a new listing with few rows)
+    if best_df is not None:
+        best_df.to_pickle(cache_file)
+        if len(best_df) < MIN_ROWS_SUFFICIENT:
+            logger.warning(
+                "NEW LISTING: %s has only %d trading rows — ML features will be limited.",
+                symbol, len(best_df),
+            )
+        return _coerce_return(best_df, best_source, return_source)
 
     # Try loading stale cache as last resort
-    if cache_file.exists():
-        try:
-            df = pd.read_pickle(cache_file)
-            if len(df) >= 20:
-                logger.warning("Using stale cache for %s", symbol)
-                return df
-        except Exception:
-            pass
+    if stale_df is not None and len(stale_df) >= MIN_ROWS_ACCEPT:
+        logger.warning("Using stale cache for %s", symbol)
+        return _coerce_return(stale_df, cache_source or "cache:stale", return_source)
 
     raise RuntimeError(
         f"Could not fetch data for '{symbol}' from any source. "
@@ -646,10 +872,24 @@ def _fetch_nepalstock(company_id: str, start: datetime, end: datetime) -> Option
         return None
 
 
-def fetch_live_price(symbol: str) -> Optional[float]:
+def fetch_live_price(
+    symbol: str,
+    return_source: bool = False,
+    max_age_seconds: int = LIVE_PRICE_CACHE_TTL_S,
+) -> Optional[float] | Tuple[Optional[float], str]:
     """Scrape the latest LTP for a symbol using multiple sources (real-time)."""
     sym = symbol.upper().strip()
-    
+    cache_file = _live_price_cache_path(sym)
+    cached_payload = load_json(cache_file, max_age_seconds=max_age_seconds)
+    stale_payload = load_json(cache_file, max_age_seconds=None) if cache_file.exists() else None
+
+    def _cached_result(payload: Optional[dict], label: str):
+        if isinstance(payload, dict):
+            price = payload.get("price")
+            if price is not None:
+                return _coerce_return(float(price), label, return_source)
+        return None
+
     # Source 1: NEPSE Official Live JSON
     try:
         url = "https://nepalstock.com.np/api/nots/market/active-securities"
@@ -659,7 +899,9 @@ def fetch_live_price(symbol: str) -> Optional[float]:
             for item in data:
                 if item.get("symbol") == sym:
                     price = item.get("lastTradedPrice") or item.get("closePrice")
-                    if price and float(price) > 0: return float(price)
+                    if price and float(price) > 0:
+                        save_json(cache_file, {"price": float(price), "source": "nepalstock_live"})
+                        return _coerce_return(float(price), "nepalstock_live", return_source)
     except Exception:
         pass
 
@@ -667,7 +909,7 @@ def fetch_live_price(symbol: str) -> Optional[float]:
     try:
         r = robust_request("https://merolagani.com/LatestMarket.aspx", timeout=8, verify=False)
         if r:
-            tables = pd.read_html(r.text)
+            tables = pd.read_html(io.StringIO(r.text))
             for t in tables:
                 cols = [str(c).upper() for c in t.columns]
                 if "SYMBOL" in cols:
@@ -678,7 +920,9 @@ def fetch_live_price(symbol: str) -> Optional[float]:
                         ltp_idx = next((i for i, c in enumerate(cols) if "LTP" in c), 1)
                         val = row.iloc[0, ltp_idx]
                         price = float(str(val).replace(",", ""))
-                        if price > 0: return price
+                        if price > 0:
+                            save_json(cache_file, {"price": float(price), "source": "merolagani_live"})
+                            return _coerce_return(float(price), "merolagani_live", return_source)
     except Exception:
         pass
 
@@ -686,7 +930,7 @@ def fetch_live_price(symbol: str) -> Optional[float]:
     try:
         r = robust_request("https://www.sharesansar.com/today-share-price", timeout=8, verify=False)
         if r:
-            tables = pd.read_html(r.text)
+            tables = pd.read_html(io.StringIO(r.text))
             for t in tables:
                 cols = [str(c).lower() for c in t.columns]
                 if "symbol" in cols:
@@ -697,18 +941,72 @@ def fetch_live_price(symbol: str) -> Optional[float]:
                         ltp_idx = cols.index("ltp") if "ltp" in cols else 1
                         val = row.iloc[0, ltp_idx]
                         price = float(str(val).replace(",", ""))
-                        if price > 0: return price
+                        if price > 0:
+                            save_json(cache_file, {"price": float(price), "source": "sharesansar_live"})
+                            return _coerce_return(float(price), "sharesansar_live", return_source)
     except Exception:
         pass
 
-    return None
+    fresh = _cached_result(cached_payload, "cache:fresh-live")
+    if fresh is not None:
+        return fresh
+    stale = _cached_result(stale_payload, "cache:stale-live")
+    if stale is not None:
+        return stale
+    return _coerce_return(None, "unavailable", return_source)
+
+
+def fetch_market_live_status(
+    return_source: bool = False,
+    max_age_seconds: int = MARKET_LIVE_CACHE_TTL_S,
+) -> bool | Tuple[bool, str]:
+    """
+    Detect whether any live market feed exists today.
+    This is intentionally lightweight and avoids static holiday rules.
+    """
+    cache_file = _market_live_cache_path()
+    cached = load_json(cache_file, max_age_seconds=max_age_seconds)
+    if isinstance(cached, dict):
+        return _coerce_return(
+            bool(cached.get("has_live_data", False)),
+            str(cached.get("source") or "cache:fresh-market"),
+            return_source,
+        )
+
+    try:
+        r = robust_request(
+            "https://nepalstock.com.np/api/nots/market/active-securities",
+            timeout=2,
+            retries=1,
+            verify=False,
+        )
+        if r:
+            data = r.json()
+            has_live_data = bool(
+                isinstance(data, list)
+                and any((item.get("lastTradedPrice") or item.get("closePrice")) for item in data if isinstance(item, dict))
+            )
+            save_json(cache_file, {"has_live_data": has_live_data, "source": "nepalstock_active_securities"})
+            return _coerce_return(has_live_data, "nepalstock_active_securities", return_source)
+    except Exception:
+        pass
+
+    cached = load_json(cache_file, max_age_seconds=None)
+    if isinstance(cached, dict):
+        return _coerce_return(
+            bool(cached.get("has_live_data", False)),
+            str(cached.get("source") or "cache:stale-market"),
+            return_source,
+        )
+
+    return _coerce_return(False, "live_feed_unavailable", return_source)
 
 
 def _fetch_sharesansar(symbol: str) -> Optional[pd.DataFrame]:
     try:
         r = robust_request(f"https://www.sharesansar.com/company/{symbol.lower()}")
         if r is None: return None
-        tables = pd.read_html(r.text)
+        tables = pd.read_html(io.StringIO(r.text))
         for t in tables:
             cols = [str(c).lower() for c in t.columns]
             if any("close" in c or "ltp" in c for c in cols):
@@ -729,19 +1027,29 @@ def _fetch_sharesansar(symbol: str) -> Optional[pd.DataFrame]:
 
 # ── Floorsheet & Smart Money Data ─────────────────────────────────────────────
 
-def fetch_floorsheet(symbol: str) -> Optional[pd.DataFrame]:
+def fetch_floorsheet(
+    symbol: str,
+    return_source: bool = False,
+    max_age_seconds: int = FLOORSHEET_CACHE_TTL_S,
+) -> Optional[pd.DataFrame] | Tuple[Optional[pd.DataFrame], str]:
     """
     Fetch the latest floorsheet (intraday transactions) for a symbol 
     from ShareSansar. Used to detect buyer/seller concentration.
     """
     symbol = symbol.upper()
+    cache_file = _floorsheet_cache_path(symbol)
+    cached_df, cache_source = _load_pickle_with_fallback(cache_file, max_age_seconds=max_age_seconds)
+    if cached_df is not None and cache_source and cache_source.startswith("cache:fresh"):
+        return _coerce_return(cached_df, cache_source, return_source)
     try:
         url = f"https://www.sharesansar.com/floorsheet?symbol={symbol}"
         r = robust_request(url, headers={**HEADERS, "Referer": "https://www.sharesansar.com/"})
         if r is None:
-            return None
+            if cached_df is not None:
+                return _coerce_return(cached_df, cache_source or "cache:stale", return_source)
+            return _coerce_return(None, "unavailable", return_source)
         
-        tables = pd.read_html(r.text)
+        tables = pd.read_html(io.StringIO(r.text))
         for t in tables:
             cols = [str(c).lower() for c in t.columns]
             if "buyer" in cols and "seller" in cols:
@@ -758,10 +1066,13 @@ def fetch_floorsheet(symbol: str) -> Optional[pd.DataFrame]:
                 t = t.rename(columns={
                     c: "rate" for c in t.columns if "rate" in c.lower() or "price" in c.lower()
                 })
-                return t
+                t.to_pickle(cache_file)
+                return _coerce_return(t, "sharesansar_floorsheet", return_source)
     except Exception as e:
         logger.debug("Floorsheet fetch error for %s: %s", symbol, e)
-    return None
+    if cached_df is not None:
+        return _coerce_return(cached_df, cache_source or "cache:stale", return_source)
+    return _coerce_return(None, "unavailable", return_source)
 
 
 def get_smart_money_signals(symbol: str) -> Dict[str, Any]:
@@ -838,35 +1149,36 @@ RSS_FEEDS = [
 ]
 
 
-def fetch_news_sentiment(symbol: str, days_back: int = 7) -> List[Dict[str, Any]]:
+def fetch_news_sentiment(
+    symbol: str,
+    days_back: int = 7,
+    return_source: bool = False,
+    max_age_seconds: int = NEWS_CACHE_TTL_S,
+) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], str]:
     """
     Fetch news articles mentioning `symbol` from RSS feeds.
     Returns list of dicts: {title, published, source, raw_score, label}
     where raw_score is basic keyword polarity (-1..+1).
     """
     _ensure_dirs()
-    cache_key = hashlib.md5(f"{symbol}_{days_back}".encode()).hexdigest()[:12]
-    cache_file = NEWS_CACHE_DIR / f"{cache_key}.json"
+    cache_file = _news_cache_path(symbol, days_back)
 
-    # Fresh cache within 2 hours
-    if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7200:
-        try:
-            with open(cache_file) as f:
-                return json.load(f)
-        except Exception:
-            pass
+    cached_articles = load_json(cache_file, max_age_seconds=max_age_seconds)
+    if isinstance(cached_articles, list):
+        return _coerce_return(cached_articles, "cache:fresh", return_source)
+
+    stale_articles = load_json(cache_file, max_age_seconds=None) if cache_file.exists() else None
 
     cutoff = datetime.now() - timedelta(days=days_back)
     articles = []
 
-    for feed_url in RSS_FEEDS:
-        try:
-            r = robust_request(feed_url, timeout=10, retries=2)
-            if r is None:
+    with ThreadPoolExecutor(max_workers=min(4, len(RSS_FEEDS))) as executor:
+        futures = [executor.submit(_fetch_rss_articles, feed_url, symbol, cutoff) for feed_url in RSS_FEEDS]
+        for future in futures:
+            try:
+                articles.extend(future.result())
+            except Exception:
                 continue
-            _parse_rss_feed(r.text, symbol, cutoff, articles)
-        except Exception:
-            continue
 
     # Deduplicate by title
     seen_titles: set = set()
@@ -887,12 +1199,15 @@ def fetch_news_sentiment(symbol: str, days_back: int = 7) -> List[Dict[str, Any]
     unique_articles.sort(key=lambda x: x.get("published", ""), reverse=True)
 
     try:
-        with open(cache_file, "w") as f:
-            json.dump(unique_articles, f, indent=2, default=str)
+        save_json(cache_file, unique_articles)
     except Exception:
         pass
 
-    return unique_articles
+    if unique_articles:
+        return _coerce_return(unique_articles, "rss_live", return_source)
+    if isinstance(stale_articles, list):
+        return _coerce_return(stale_articles, "cache:stale", return_source)
+    return _coerce_return([], "unavailable", return_source)
 
 
 def _parse_rss_feed(xml_text: str, symbol: str, cutoff: datetime, out: List) -> None:

@@ -211,6 +211,39 @@ class NepseMarketCalendar:
         return False, None
 
     # --- Core logic ---
+
+    def _is_non_trading_basic(self, dd: date) -> bool:
+        """
+        Non-recursive closure check: weekend + overrides + API + static public holidays only.
+        Does NOT call is_trading_day / market_status / is_pre_holiday — safe to use inside
+        those methods without creating a cycle.
+        """
+        ov = self._overrides.get(dd)
+        if ov:
+            return ov["action"] == "CLOSE"
+        if dd.weekday() in (4, 5):
+            return True
+        is_h, _ = self._api_is_holiday(dd)
+        if is_h:
+            return True
+        if _HAS_STATIC and _STATIC_CAL is not None:
+            try:
+                if getattr(_STATIC_CAL, "is_public_holiday", None) and _STATIC_CAL.is_public_holiday(dd):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _compute_pre_holiday(self, dd: date, lookahead_days: int = 1) -> bool:
+        """
+        Internal: returns True when one of the next `lookahead_days` calendar days is
+        non-trading. Uses _is_non_trading_basic so there is no recursion risk.
+        """
+        for i in range(1, max(1, int(lookahead_days)) + 1):
+            if self._is_non_trading_basic(dd + timedelta(days=i)):
+                return True
+        return False
+
     def market_status(self, d: date | datetime) -> MarketStatus:
         dd = _to_date(d)
 
@@ -220,7 +253,6 @@ class NepseMarketCalendar:
             if ov["action"] == "CLOSE":
                 return MarketStatus(dd, False, reason=ov.get("reason") or "Manual override: CLOSED")
             if ov["action"] == "OPEN":
-                # Still respect Fri/Sat? If user forces OPEN, accept it explicitly.
                 return MarketStatus(dd, True, reason=ov.get("reason") or "Manual override: OPEN")
 
         # Weekend (NEPSE): Friday=4, Saturday=5
@@ -234,9 +266,7 @@ class NepseMarketCalendar:
 
         # Static engine fallback (includes known holiday set, and bandh detection if enabled)
         if _HAS_STATIC and _STATIC_CAL is not None:
-            # Optionally disable bandh detection by temporarily bypassing is_bandh for far dates.
             if not self.enable_bandh_detection and hasattr(_STATIC_CAL, "is_weekend"):
-                # Use weekend already handled; check only public holidays.
                 if _STATIC_CAL.is_public_holiday(dd):
                     return MarketStatus(dd, False, reason="Public holiday (static)", holiday_name=_STATIC_CAL.get_holiday_name(dd))
             else:
@@ -251,19 +281,20 @@ class NepseMarketCalendar:
                     if hasattr(_STATIC_CAL, "bandh_status"):
                         bs = _STATIC_CAL.bandh_status(dd)
                         if bool(bs.get("uncertain", False)):
+                            is_pre = self._compute_pre_holiday(dd)
                             return MarketStatus(
                                 dd,
                                 True,
                                 reason="Trading day",
                                 warning=f"⚠ possible disruption (bandh/strike unconfirmed, score={bs.get('score')}, sources={bs.get('sources')})",
-                                is_pre_holiday=self.is_pre_holiday(dd),
-                                pre_holiday_liquidity_flag=1.0 if self.is_pre_holiday(dd) else 0.0,
+                                is_pre_holiday=is_pre,
+                                pre_holiday_liquidity_flag=1.0 if is_pre else 0.0,
                             )
                 except Exception:
                     pass
 
-        # Otherwise: trading day
-        is_pre = self.is_pre_holiday(dd)
+        # Otherwise: trading day — use non-recursive pre-holiday check
+        is_pre = self._compute_pre_holiday(dd)
         return MarketStatus(
             dd,
             True,
@@ -302,12 +333,9 @@ class NepseMarketCalendar:
         This is a practical thin-liquidity flag for NEPSE.
         """
         dd = _to_date(d)
-        if not self.is_trading_day(dd):
+        if self._is_non_trading_basic(dd):
             return False
-        for i in range(1, max(1, int(lookahead_days)) + 1):
-            if not self.is_trading_day(dd + timedelta(days=i)):
-                return True
-        return False
+        return self._compute_pre_holiday(dd, lookahead_days)
 
     def upcoming_holidays(self, from_date: date | datetime, n: int = 3) -> List[Dict[str, Any]]:
         """

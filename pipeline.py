@@ -1,14 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from backtest_engine import BacktestConfig, BacktestResult, generate_signals, run_backtest
+from cache import dataframe_fingerprint, get_cache_path, load_pickle, save_pickle
 from features import add_market_features, add_targets, build_features, clean_ohlcv_data, get_feature_cols
 from models import NEPSEEnsemble, ForecastPoint, purged_walk_forward_splits
 from regime import MarketRegimeDetector
+
+try:
+    from meta_labeling import MetaLabeler, MetaReport
+    HAS_META = True
+except ImportError:
+    HAS_META = False
+    MetaLabeler = None   # type: ignore[assignment,misc]
+    MetaReport  = None   # type: ignore[assignment,misc]
 
 
 @dataclass
@@ -21,6 +30,8 @@ class PipelineResult:
     predictions: pd.DataFrame
     signals: pd.DataFrame
     backtest: BacktestResult
+    meta_labeler: Optional[Any] = field(default=None)   # MetaLabeler instance
+    meta_report: Optional[Any]  = field(default=None)   # MetaReport dataclass
 
 
 def prepare_pipeline_frame(
@@ -50,6 +61,29 @@ def train_model(
     n_opt_trials: int = 10,
     random_state: int = 42,
 ) -> tuple[NEPSEEnsemble, pd.DataFrame, pd.DataFrame, List[str]]:
+    cache_file = _model_cache_file(
+        data=data,
+        symbol=symbol,
+        market_data=market_data,
+        optimise=optimise,
+        n_folds=n_folds,
+        n_opt_trials=n_opt_trials,
+        random_state=random_state,
+    )
+    cached_artifact = load_pickle(cache_file, max_age_seconds=None)
+    if isinstance(cached_artifact, dict):
+        model = cached_artifact.get("model")
+        clean_data = cached_artifact.get("clean_data")
+        feature_frame = cached_artifact.get("feature_frame")
+        feature_cols = cached_artifact.get("feature_cols")
+        if (
+            isinstance(model, NEPSEEnsemble)
+            and isinstance(clean_data, pd.DataFrame)
+            and isinstance(feature_frame, pd.DataFrame)
+            and isinstance(feature_cols, list)
+        ):
+            return model, clean_data, feature_frame, feature_cols
+
     clean_data, feature_frame, feature_cols = prepare_pipeline_frame(data, market_data=market_data)
     folds = n_folds if n_folds is not None else min(5, max(3, len(feature_frame) // 180))
     model = NEPSEEnsemble(
@@ -60,6 +94,15 @@ def train_model(
         random_state=random_state,
     )
     model.fit(feature_frame, feature_cols)
+    save_pickle(
+        cache_file,
+        {
+            "model": model,
+            "clean_data": clean_data,
+            "feature_frame": feature_frame,
+            "feature_cols": feature_cols,
+        },
+    )
     return model, clean_data, feature_frame, feature_cols
 
 
@@ -123,6 +166,7 @@ def walk_forward_predictions(
                     "direction_prob": float(point.direction_prob),
                     "atr_pct_14": float(row_data.get("atr_pct_14", 0.0) or 0.0),
                     "vol_20d": float(row_data.get("vol_20d", 0.0) or 0.0),
+                    "garch_vol": float(row_data.get("garch_vol", 0.0) or 0.0),
                     "volatility_20": float(row_data.get("volatility_20", 0.0) or 0.0),
                     "regime": str(regime_info.get("regime", row_data.get("regime", "NEUTRAL"))),
                     "regime_confidence": float(regime_info.get("confidence", 0.0) or 0.0),
@@ -135,6 +179,38 @@ def walk_forward_predictions(
     return pd.DataFrame(pred_rows).sort_values("trade_date").reset_index(drop=True)
 
 
+def fit_meta_labeler(
+    predictions: pd.DataFrame,
+    feature_frame: pd.DataFrame,
+) -> "Optional[MetaLabeler]":
+    """
+    Train a MetaLabeler on the OOF predictions from walk_forward_predictions.
+
+    Parameters
+    ----------
+    predictions : pd.DataFrame
+        Output of ``walk_forward_predictions``.
+    feature_frame : pd.DataFrame
+        Full feature frame including ``triple_barrier_label`` column.
+
+    Returns
+    -------
+    MetaLabeler or None
+        Fitted MetaLabeler when sklearn is available and enough samples exist.
+        None when meta_labeling is unavailable or training fails.
+    """
+    if not HAS_META or predictions.empty:
+        return None
+    try:
+        ml = MetaLabeler()
+        ml.fit(predictions, feature_frame)
+        return ml if ml.is_fitted_ else None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("MetaLabeler.fit failed: %s", exc)
+        return None
+
+
 def run_full_pipeline(
     data: pd.DataFrame,
     symbol: str = "STOCK",
@@ -145,7 +221,20 @@ def run_full_pipeline(
     n_opt_trials: int = 10,
     random_state: int = 42,
     backtest_config: Optional[BacktestConfig] = None,
+    use_meta_labeling: bool = True,
 ) -> PipelineResult:
+    """
+    Run the full NEPSE prediction pipeline.
+
+    Parameters
+    ----------
+    use_meta_labeling : bool
+        When True (default), fits a MetaLabeler after the walk-forward
+        predictions and passes ``meta_predictions`` to ``generate_signals``
+        so that low-confidence trades are filtered.  Set False to reproduce
+        the behaviour of the pipeline without meta-labeling (useful for
+        baseline comparison).
+    """
     model, clean_data, feature_frame, feature_cols = train_model(
         data=data,
         symbol=symbol,
@@ -165,9 +254,26 @@ def run_full_pipeline(
         n_opt_trials=n_opt_trials,
         random_state=random_state,
     )
-    signals = generate_signals(predictions, config=backtest_config)
+
+    # ── Meta-Labeling (optional second-stage filter) ──────────────────────
+    meta_labeler  = None
+    meta_report   = None
+    meta_preds_df = None
+
+    if use_meta_labeling and HAS_META and not predictions.empty:
+        meta_labeler = fit_meta_labeler(predictions, feature_frame)
+        if meta_labeler is not None:
+            meta_report   = meta_labeler.report_
+            meta_preds_df = meta_labeler.predict_frame(predictions)
+
+    signals = generate_signals(
+        predictions,
+        config=backtest_config,
+        meta_predictions=meta_preds_df,
+    )
     backtest = run_backtest(signals, market_data=clean_data, config=backtest_config)
     forecast = model.forecast(clean_data, feature_cols, horizon=forecast_horizon)
+
     return PipelineResult(
         clean_data=clean_data,
         feature_frame=feature_frame,
@@ -177,4 +283,31 @@ def run_full_pipeline(
         predictions=predictions,
         signals=signals,
         backtest=backtest,
+        meta_labeler=meta_labeler,
+        meta_report=meta_report,
     )
+
+
+def _model_cache_file(
+    data: pd.DataFrame,
+    symbol: str,
+    market_data: Optional[pd.DataFrame],
+    optimise: bool,
+    n_folds: Optional[int],
+    n_opt_trials: int,
+    random_state: int,
+):
+    model_key = dataframe_fingerprint(data, ["date", "open", "high", "low", "close", "volume"])
+    market_key = dataframe_fingerprint(market_data, ["date", "open", "high", "low", "close", "volume"])
+    cache_token = "_".join(
+        [
+            symbol.upper(),
+            f"d{model_key}",
+            f"m{market_key}",
+            f"opt{int(bool(optimise))}",
+            f"f{n_folds or 0}",
+            f"t{int(n_opt_trials)}",
+            f"r{int(random_state)}",
+        ]
+    )
+    return get_cache_path("models", f"{cache_token}.pkl")

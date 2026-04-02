@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
@@ -34,7 +35,24 @@ from colorama import Fore, Style, init
 from tabulate import tabulate
 
 from prediction_engine import set_global_determinism, compute_sentiment
-from fetcher import fetch_company_list, fetch_history, get_aggregate_sentiment, fetch_live_price, fetch_floorsheet, fetch_news_sentiment, resolve_symbol
+from fetcher import (
+    fetch_company_list,
+    fetch_history,
+    fetch_live_price,
+    fetch_floorsheet,
+    fetch_market_live_status,
+    fetch_news_sentiment,
+    fetch_nepse_symbols,
+    get_aggregate_sentiment,
+    is_known_symbol_local,
+    resolve_symbol,
+    get_company_id,
+    _fetch_symbols_autosuggest,
+    _read_symbols_cache,
+    _read_company_ids_cache,
+    _write_symbols_cache,
+    _write_company_ids_cache,
+)
 from features import clean_ohlcv_data
 from models import NEPSEEnsemble, ForecastPoint
 from models import ENSEMBLE_WEIGHTS
@@ -125,92 +143,76 @@ def banner():
     print()
 
 
+def _format_bs_date(ad_day: date) -> str:
+    if not HAS_BS_UTILS:
+        return ""
+    try:
+        y, m, d = ad_to_bs_ymd(ad_day)
+        return f"BS {y}-{m:02d}-{d:02d} ({get_bs_month_name(m)})"
+    except Exception:
+        return ""
+
+
+def _determine_market_status(today: date, has_live_data: bool, source: str) -> dict:
+    if has_live_data:
+        return {
+            "label": "OPEN",
+            "display": f"{Fore.GREEN}OPEN ✅{Style.RESET_ALL}",
+            "reason": "Live market feed detected today",
+            "source": source,
+        }
+
+    is_weekend = bool(_NEPAL_CAL.is_weekend(today)) if HAS_NEPAL_CAL and _NEPAL_CAL is not None else today.weekday() == 5
+    if is_weekend:
+        return {
+            "label": "CLOSED",
+            "display": f"{Fore.RED}CLOSED ❌{Style.RESET_ALL}",
+            "reason": "Scheduled weekend closure",
+            "source": "weekend_rule",
+        }
+
+    return {
+        "label": "LIKELY OPEN",
+        "display": f"{Fore.YELLOW}LIKELY OPEN{Style.RESET_ALL}",
+        "reason": "No live feed confirmed; static-holiday fallback intentionally disabled",
+        "source": source or "dynamic_fallback",
+    }
+
+
 def _print_market_status():
-    """Print today's market status using authoritative NEPSE calendar facade."""
+    """Print today's market status without relying on static holiday closures."""
     today = date.today()
-    bs_str = ""
-    if HAS_NEPAL_CAL and HAS_BS_UTILS:
-        try:
-            validate_ad_bs_mapping(today)
-            y, m, d = ad_to_bs_ymd(today)
-            bs_str = f"BS {y}-{m:02d}-{d:02d} ({get_bs_month_name(m)})"
-        except Exception:
-            bs_str = ""
+    bs_str = _format_bs_date(today)
+    market_live, live_source = fetch_market_live_status(return_source=True)
+    status = _determine_market_status(today, market_live, live_source)
 
     print_section("Nepal Market Status")
     print(f"  Today (AD)   : {today.strftime('%Y-%m-%d')} ({today.strftime('%A')})")
     if bs_str:
         print(f"  Today (BS)   : {bs_str}")
-
-    # Prefer authoritative facade (supports API + overrides); fallback to static calendar.
-    if HAS_MKT_CAL and _MKT_CAL is not None:
-        st = _MKT_CAL.market_status(today)
-        if st.is_trading_day:
-            suffix = " (pre-holiday liquidity risk)" if st.is_pre_holiday else ""
-            if getattr(st, "warning", None):
-                suffix += f"  |  ⚠ {st.warning}"
-            market_str = f"{Fore.GREEN}OPEN ✅{Style.RESET_ALL}  (Sun–Thu, 11:00–15:00 NST){suffix}"
-        else:
-            r = st.reason
-            if st.holiday_name:
-                r = f"{r}: {st.holiday_name}"
-            market_str = f"{Fore.RED}CLOSED ❌{Style.RESET_ALL}  ({r})"
-        print(f"  Market Today : {market_str}")
-        if hasattr(st, "warning") and st.warning:
-            pass
-        try:
-            next_td = _MKT_CAL.next_trading_day(today)
-            print(f"  Next Trading : {next_td.strftime('%Y-%m-%d')} ({next_td.strftime('%A')})")
-        except Exception:
-            pass
-        try:
-            upcoming = _MKT_CAL.upcoming_holidays(today, n=3)
-            if upcoming:
-                hol_str = "  |  ".join(
-                    f"{h['date']} {h['name']} (in {h['days_away']}d)"
-                    for h in upcoming
-                )
-                print(f"  Upcoming     : {hol_str}")
-        except Exception:
-            pass
-        print()
-        return
-
-    if HAS_NEPAL_CAL and _NEPAL_CAL is not None:
-        is_trading = _NEPAL_CAL.is_trading_day(today)
-        if is_trading:
-            market_str = f"{Fore.GREEN}OPEN ✅{Style.RESET_ALL}  (Sun–Thu, 11:00–15:00 NST)"
-        else:
-            if _NEPAL_CAL.is_weekend(today):
-                reason = "Weekend (Fri/Sat closed)"
-            elif _NEPAL_CAL.is_public_holiday(today):
-                hname = _NEPAL_CAL.get_holiday_name(today) or "Public Holiday"
-                reason = f"Public Holiday: {hname}"
-            else:
-                reason = "Market Closed"
-            market_str = f"{Fore.RED}CLOSED ❌{Style.RESET_ALL}  ({reason})"
-
-    print(f"  Market Today : {market_str}")
+    print(f"  Market Today : {status['display']}  ({status['reason']})")
+    print(f"  Data Source  : {status['source']}")
 
     # Next trading day
     try:
-        next_td = _NEPAL_CAL.next_trading_date(today)
-        print(f"  Next Trading : {next_td.strftime('%Y-%m-%d')} ({next_td.strftime('%A')})")
-    except Exception:
-        pass
-
-    # Upcoming holidays
-    try:
-        upcoming = _NEPAL_CAL.upcoming_holidays(today, n=3)
-        if upcoming:
-            hol_str = "  |  ".join(
-                f"{h['date']} {h['name']} (in {h['days_away']}d)"
-                for h in upcoming
-            )
-            print(f"  Upcoming     : {hol_str}")
+        if HAS_MKT_CAL and _MKT_CAL is not None:
+            next_td = today if status["label"] == "OPEN" else _MKT_CAL.next_trading_day(today)
+        elif HAS_NEPAL_CAL and _NEPAL_CAL is not None:
+            next_td = today if status["label"] == "OPEN" else _NEPAL_CAL.next_trading_date(today)
+        else:
+            next_td = None
+        if next_td is not None:
+            print(f"  Next Trading : {next_td.strftime('%Y-%m-%d')} ({next_td.strftime('%A')})")
     except Exception:
         pass
     print()
+
+
+def _load_companies_with_notice() -> pd.DataFrame:
+    print(f"{Fore.YELLOW}  Loading NEPSE company list…{Style.RESET_ALL}")
+    companies = fetch_company_list()
+    print()
+    return companies
 
 
 # ─── Company Picker ───────────────────────────────────────────────────────────
@@ -438,6 +440,9 @@ def run_ml_analysis(
     ollama_model: str = "llama3",
     seed: int = 42,
     debug: bool = False,
+    fast_mode: bool = False,
+    data_sources: Optional[dict] = None,
+    started_at: Optional[float] = None,
 ) -> None:
 
     print_header(f"NEPSE ML ANALYSIS — {symbol.upper()}")
@@ -471,6 +476,13 @@ def run_ml_analysis(
     print(f"  52-Week Low  : NPR {df['close'].rolling(min(252,len(df))).min().iloc[-1]:,.2f}")
     if "volume" in df.columns and df["volume"].sum() > 0:
         print(f"  Avg Vol (20d): {df['volume'].dropna().tail(20).mean():,.0f}")
+    if data_sources:
+        hist_source = data_sources.get("price_history")
+        live_source = data_sources.get("live_price")
+        if hist_source:
+            print(f"  Data Source  : {hist_source}")
+        if live_source:
+            print(f"  Live Feed    : {live_source}")
 
     # BS date of last record
     if HAS_NEPAL_CAL:
@@ -478,85 +490,126 @@ def run_ml_analysis(
             ld = df["date"].iloc[-1]
             ld_date = ld.date() if hasattr(ld, "date") else ld
             if HAS_BS_UTILS:
-                validate_ad_bs_mapping(ld_date)
                 y, m, d = ad_to_bs_ymd(ld_date)
                 print(f"  Last Date BS : {y}-{m:02d}-{d:02d} ({get_bs_month_name(m)})")
         except Exception:
             pass
 
+    days_avail = (df['date'].iloc[-1] - df['date'].iloc[0]).days
+    idx_years = max(1, round(days_avail / 365, 1))
+    market_df = None
+    market_source = None
+    news_data = []
+    news_source = "skipped"
+    floorsheet_df = None
+    floorsheet_source = "skipped"
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        market_future = None
+        news_future = None
+        floorsheet_future = None
+        if symbol.upper() != "NEPSE":
+            market_future = executor.submit(fetch_history, "NEPSE", years=idx_years, return_source=True)
+        if not fast_mode:
+            news_future = executor.submit(fetch_news_sentiment, symbol, return_source=True)
+            floorsheet_future = executor.submit(fetch_floorsheet, symbol, return_source=True)
+
+        if market_future is not None:
+            try:
+                market_df, market_source = market_future.result()
+            except Exception as exc:
+                logger.warning("Market features unavailable: %s", exc)
+        if news_future is not None:
+            try:
+                news_data, news_source = news_future.result()
+            except Exception:
+                news_data, news_source = [], "unavailable"
+        if floorsheet_future is not None:
+            try:
+                floorsheet_df, floorsheet_source = floorsheet_future.result()
+            except Exception:
+                floorsheet_df, floorsheet_source = None, "unavailable"
+
     # ── Fetch News Early for Sentiment & Anomalies ── v6.1 ──────────────────
     news_titles = []
-    news_data = fetch_news_sentiment(symbol)
-    if not news_data:
-        news_data = fetch_news_sentiment("NEPSE")  # fallback to general news
+    if not fast_mode and not news_data:
+        news_data, news_source = fetch_news_sentiment("NEPSE", return_source=True)  # fallback to general news
 
     # ── Sentiment ─────────────────────────────────────────────────────────────
     print_section("News Sentiment Analysis")
-    print(f"  Fetching news for {symbol}... found {len(news_data)} articles.")
-    for n in news_data[:3]:
-        news_titles.append(n['title'].split('\n')[0].strip())
-
-    # If user enabled Ollama but it's not installed/running, gracefully fallback.
-    if use_ollama and not is_ollama_available("http://localhost:11434"):
-        print(f"  {Fore.YELLOW}Ollama not detected locally — falling back to non-AI sentiment.{Style.RESET_ALL}")
-        use_ollama = False
-        
-    sent = compute_sentiment(
-        news_titles,
-        use_ollama=use_ollama,
-        ollama_model=ollama_model,
-        analyze_sentiment_headlines_fn=analyze_sentiment_headlines if use_ollama else None,
-    )
-    score = sent.final_score
-    sentiment = {"score": score, "reason": sent.reason, "category": sent.category}
-    s_color = Fore.GREEN if score > 0.3 else Fore.RED if score < -0.3 else Fore.YELLOW
-    s_text = "BULLISH" if score > 0.3 else "BEARISH" if score < -0.3 else "NEUTRAL"
-    if sent.source == "ollama":
-        print(f"  AI Score ({sent.category:9s}) : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
-        if sent.reason:
-            print(f"  AI Analysis      : {sent.reason}")
-        if abs(sent.final_score - sent.baseline_score) > 1e-6:
-            print(f"  Baseline (kw)    : {sent.baseline_score:+.3f}  |  Delta: {(sent.final_score - sent.baseline_score):+.3f}")
+    if fast_mode:
+        sentiment = {"score": 0.0, "reason": "Skipped in --fast mode", "category": "FAST"}
+        print(f"  {Fore.CYAN}Skipped in --fast mode for faster startup.{Style.RESET_ALL}")
     else:
-        print(f"  Aggregate Score  : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
-        for t in news_titles[:3]:
-            tl = t.lower()
-            prefix = f"{Fore.GREEN}[POSITIVE]{Style.RESET_ALL}" if any(w in tl for w in ['surge','profit','dividend','growth','bull','positive','upgrade','accumulate']) else \
-                     f"{Fore.RED}[NEGATIVE]{Style.RESET_ALL}" if any(w in tl for w in ['loss','decline','crash','bear','negative','penalty','downgrade','sell']) else \
-                     f"{Fore.YELLOW}[NEUTRAL ]{Style.RESET_ALL}"
-            print(f"  {prefix}  {t}")
+        print(f"  Fetching news for {symbol}... found {len(news_data)} articles.")
+        print(f"  Source          : {news_source}")
+        for n in news_data[:3]:
+            news_titles.append(n['title'].split('\n')[0].strip())
+
+        # If user enabled Ollama but it's not installed/running, gracefully fallback.
+        if use_ollama and not is_ollama_available("http://localhost:11434"):
+            print(f"  {Fore.YELLOW}Ollama not detected locally — falling back to non-AI sentiment.{Style.RESET_ALL}")
+            use_ollama = False
+            
+        sent = compute_sentiment(
+            news_titles,
+            use_ollama=use_ollama,
+            ollama_model=ollama_model,
+            analyze_sentiment_headlines_fn=analyze_sentiment_headlines if use_ollama else None,
+        )
+        score = sent.final_score
+        sentiment = {"score": score, "reason": sent.reason, "category": sent.category}
+        s_color = Fore.GREEN if score > 0.3 else Fore.RED if score < -0.3 else Fore.YELLOW
+        s_text = "BULLISH" if score > 0.3 else "BEARISH" if score < -0.3 else "NEUTRAL"
+        if sent.source == "ollama":
+            print(f"  AI Score ({sent.category:9s}) : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
+            if sent.reason:
+                print(f"  AI Analysis      : {sent.reason}")
+            if abs(sent.final_score - sent.baseline_score) > 1e-6:
+                print(f"  Baseline (kw)    : {sent.baseline_score:+.3f}  |  Delta: {(sent.final_score - sent.baseline_score):+.3f}")
+        else:
+            print(f"  Aggregate Score  : {s_color}{score:+.3f}  ({s_text}){Style.RESET_ALL}")
+            for t in news_titles[:3]:
+                tl = t.lower()
+                prefix = f"{Fore.GREEN}[POSITIVE]{Style.RESET_ALL}" if any(w in tl for w in ['surge','profit','dividend','growth','bull','positive','upgrade','accumulate']) else \
+                         f"{Fore.RED}[NEGATIVE]{Style.RESET_ALL}" if any(w in tl for w in ['loss','decline','crash','bear','negative','penalty','downgrade','sell']) else \
+                         f"{Fore.YELLOW}[NEUTRAL ]{Style.RESET_ALL}"
+                print(f"  {prefix}  {t}")
 
     # Ensure sentiment score actually feeds the ML feature pipeline.
-    sentiment_score = float(score)
+    sentiment_score = float(sentiment.get("score", 0.0))
     if debug:
         try:
-            print(f"  Debug: sentiment_source={sent.source} baseline={sent.baseline_score:+.3f} final={sent.final_score:+.3f}")
+            if not fast_mode:
+                print(f"  Debug: sentiment_source={sent.source} baseline={sent.baseline_score:+.3f} final={sent.final_score:+.3f}")
         except Exception:
             pass
 
     # ── Market Microstructure (Smart Money) ── v6.0 ───────────────────────────
     print_section("Market Microstructure (Smart Money)")
-    print(f"  Fetching latest floorsheet for {symbol}…", end="", flush=True)
     sm_analyst = SmartMoneyAnalyst()
-    floorsheet_df = fetch_floorsheet(symbol)
-    sm_report = sm_analyst.analyze_floorsheet(floorsheet_df, recent_ohlcv=df)
-    
-    if sm_report.get("status") != "No data":
-        print(" done.")
-        sc_color = Fore.GREEN if "ACCUMULATION" in sm_report["regime"] else Fore.RED if "DISTRIBUTION" in sm_report["regime"] else Fore.YELLOW
-        if sm_report.get("wash_trading_alert"): sc_color = Fore.RED
-        
-        print(f"  SM Regime        : {sc_color}{sm_report['regime']}{Style.RESET_ALL}")
-        print(f"  Trap Index       : {Fore.CYAN}{sm_report.get('trap_score', 0)}/100{Style.RESET_ALL} (Manipulation Risk)")
-        print(f"  Broker HHI       : {sm_report.get('buy_hhi', 0):.0f} Buy / {sm_report.get('sell_hhi', 0):.0f} Sell")
-        print(f"  Concentration    : {sm_report['buy_concentration']*100:.1f}% Buy / {sm_report['sell_concentration']*100:.1f}% Sell")
-        if sm_report.get("wash_trading_alert"):
-            print(f"  {Fore.RED}⚠️ WASH TRADING ALERT: Same broker dominates both Buy & Sell sides.{Style.RESET_ALL}")
-        if sm_report.get("hidden_accumulation"):
-            print(f"  {Fore.CYAN}🕵️ HIDDEN ACCUMULATION: Price compression with high institution buying.{Style.RESET_ALL}")
-    else:
-        print(" found no active floorsheet records.")
+    if fast_mode:
+        print(f"  {Fore.CYAN}Skipped in --fast mode for faster startup.{Style.RESET_ALL}")
         sm_report = {"regime": "RETAIL", "buy_concentration": 0, "sell_concentration": 0, "trap_score": 0}
+    else:
+        print(f"  Source           : {floorsheet_source}")
+        sm_report = sm_analyst.analyze_floorsheet(floorsheet_df, recent_ohlcv=df)
+        
+        if sm_report.get("status") != "No data":
+            sc_color = Fore.GREEN if "ACCUMULATION" in sm_report["regime"] else Fore.RED if "DISTRIBUTION" in sm_report["regime"] else Fore.YELLOW
+            if sm_report.get("wash_trading_alert"): sc_color = Fore.RED
+            
+            print(f"  SM Regime        : {sc_color}{sm_report['regime']}{Style.RESET_ALL}")
+            print(f"  Trap Index       : {Fore.CYAN}{sm_report.get('trap_score', 0)}/100{Style.RESET_ALL} (Manipulation Risk)")
+            print(f"  Broker HHI       : {sm_report.get('buy_hhi', 0):.0f} Buy / {sm_report.get('sell_hhi', 0):.0f} Sell")
+            print(f"  Concentration    : {sm_report['buy_concentration']*100:.1f}% Buy / {sm_report['sell_concentration']*100:.1f}% Sell")
+            if sm_report.get("wash_trading_alert"):
+                print(f"  {Fore.RED}⚠️ WASH TRADING ALERT: Same broker dominates both Buy & Sell sides.{Style.RESET_ALL}")
+            if sm_report.get("hidden_accumulation"):
+                print(f"  {Fore.CYAN}🕵️ HIDDEN ACCUMULATION: Price compression with high institution buying.{Style.RESET_ALL}")
+        else:
+            print("  No active floorsheet records.")
+            sm_report = {"regime": "RETAIL", "buy_concentration": 0, "sell_concentration": 0, "trap_score": 0}
 
 
     # ── Technical Indicators ──────────────────────────────────────────────────
@@ -588,8 +641,10 @@ def run_ml_analysis(
     print_section("Market Regime Classification")
     rc = getattr(Fore, regime_info['color'].upper(), Fore.WHITE)
     print(f"  Detected Regime  : {rc}{regime_info['regime']}{Style.RESET_ALL}")
-    print(f"  Confidence       : {regime_info['confidence']*100:.0f}%")
-    print(f"  Volatility (20d) : {regime_info['volatility_pct']}%")
+    print(f"  Confidence       : {regime_info.get('confidence', 0)*100:.0f}%")
+    vol_pct = regime_info.get('volatility_pct')
+    if vol_pct is not None:
+        print(f"  Volatility (20d) : {vol_pct}%")
 
     # ── Anomaly Detection ─────────────────────────────────────────────────────
     anomalies = detect_anomalies(df_ind, news_data)
@@ -621,20 +676,17 @@ def run_ml_analysis(
         print_section("Pipeline Mode")
         print(f"  {Fore.YELLOW}Statistical mode is deprecated. Running the unified ML pipeline instead.{Style.RESET_ALL}")
 
+    if len(df) < 30:
+        print_section("ML Ensemble Training")
+        print(f"  {Fore.YELLOW}Insufficient data for ML training ({len(df)} rows — need 100+).{Style.RESET_ALL}")
+        print(f"  {Fore.CYAN}This stock was recently listed. Check back once more trading days accumulate.{Style.RESET_ALL}")
+        print(f"  Above: price snapshot, trend, and available technical indicators.")
+
     if len(df) >= 100:
         print_section("ML Ensemble Training")
         print("  Building the unified training/prediction pipeline…")
         t0 = time.time()
         try:
-            market_df = None
-            try:
-                if symbol.upper() != "NEPSE":
-                    days_avail = (df['date'].iloc[-1] - df['date'].iloc[0]).days
-                    idx_years = max(1, round(days_avail / 365, 1))
-                    market_df = fetch_history("NEPSE", years=idx_years)
-            except Exception as me:
-                logger.warning(f"Market features skip: {me}")
-
             model, clean_df, feat_df, feature_cols = train_model(
                 data=df,
                 symbol=symbol,
@@ -672,7 +724,8 @@ def run_ml_analysis(
             ml_report = model.report_
 
             elapsed = time.time() - t0
-            print(f"  Training complete in {elapsed:.1f}s  |  Models: {', '.join(ml_report.models_used)}")
+            cache_hint = f"  |  Market ctx: {market_source}" if market_source else ""
+            print(f"  Training complete in {elapsed:.1f}s  |  Models: {', '.join(ml_report.models_used)}{cache_hint}")
             print()
             print(f"  {'Fold':<6} {'MAE%':>8} {'RMSE%':>8} {'Dir Acc':>9} {'Sharpe':>8}")
             print(f"  {'─'*6} {'─'*8} {'─'*8} {'─'*9} {'─'*8}")
@@ -763,15 +816,14 @@ def run_ml_analysis(
     latest_date  = df["date"].iloc[-1].strftime("%Y-%m-%d")
     actual_close = float(df["close"].iloc[-1])
 
-    if symbol.upper() not in log_data or not any(
+    if (not fast_mode) and (symbol.upper() not in log_data or not any(
         e.get("date") == latest_date for e in log_data.get(symbol.upper(), [])
-    ):
+    )):
         if len(df) > 100:
             try:
                 hist_market_df = None
                 if symbol.upper() != "NEPSE":
-                    hist_years = max(1, round((df.iloc[:-1]["date"].iloc[-1] - df.iloc[:-1]["date"].iloc[0]).days / 365, 1))
-                    hist_market_df = fetch_history("NEPSE", years=hist_years)
+                    hist_market_df, _ = fetch_history("NEPSE", years=idx_years, return_source=True)
                 hist_model, hist_clean, _, hist_cols = train_model(
                     data=df.iloc[:-1].copy(),
                     symbol=symbol,
@@ -1020,6 +1072,8 @@ def run_ml_analysis(
     print()
     print(Fore.CYAN + "═" * 72)
     print(Fore.CYAN + "  Analysis complete. " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if started_at is not None:
+        print(Fore.CYAN + f"  Execution time: {time.time() - started_at:.2f}s")
     print(Fore.CYAN + "═" * 72)
     print()
 
@@ -1056,6 +1110,7 @@ def _save_report(symbol, df, trend_info, predictions, sentiment, ml_report, anom
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    started_at = time.time()
     # Windows console/codepage safety: prefer UTF-8 to avoid crashes on emoji/box-drawing.
     try:
         if hasattr(sys.stdout, "reconfigure"):
@@ -1089,6 +1144,7 @@ Examples:
     parser.add_argument("--ollama-model", default="llama3", help="Ollama model name (default: llama3)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible results (default: 42)")
     parser.add_argument("--debug", action="store_true", help="Show debug details (features, reasoning, deltas)")
+    parser.add_argument("--allow-unknown-symbol", action="store_true", help="Bypass fast local symbol validation and try direct remote fetches")
     args = parser.parse_args()
 
     # Guard against rare recursion crashes in some ML / pandas paths
@@ -1101,11 +1157,8 @@ Examples:
     banner()
     _print_market_status()
 
-    print(f"{Fore.YELLOW}  Loading NEPSE company list…{Style.RESET_ALL}")
-    companies = fetch_company_list()
-    print()
-
     if args.list:
+        companies = _load_companies_with_notice()
         print(tabulate(
             [[r["symbol"], r["name"][:50], r["sector"]] for _, r in companies.iterrows()],
             headers=["Symbol", "Name", "Sector"], tablefmt="rounded_outline",
@@ -1114,13 +1167,43 @@ Examples:
         return
 
     if args.symbol:
-        try:
-            sym = resolve_symbol(args.symbol)
-        except ValueError as e:
-            print(f"\n  {Fore.RED}Error: {e}{Style.RESET_ALL}")
-            sys.exit(1)
-        m        = companies[companies["symbol"].str.upper() == sym]
-        selected = m.iloc[0].to_dict() if not m.empty else {"symbol": sym, "name": sym, "sector": "", "id": ""}
+        sym = args.symbol.strip().upper()
+        # ── Dynamic symbol resolution (no hardcoded list) ──────────────────────
+        # 1. Check AutoSuggest ID + name cache (instant, no network)
+        sym_cache = _read_symbols_cache() or {}
+        ids_cache = _read_company_ids_cache() or {}
+        company_name = sym_cache.get(sym, "")
+        company_id   = ids_cache.get(sym, "")
+
+        # 2. If name or ID missing, call the AutoSuggest API live right now
+        if not company_name or not company_id:
+            print(f"\n  {Fore.YELLOW}Looking up {sym} on NEPSE…{Style.RESET_ALL}")
+            try:
+                live_syms, live_ids = _fetch_symbols_autosuggest()
+                if live_syms:
+                    merged_syms = {**sym_cache, **live_syms}
+                    merged_ids  = {**ids_cache, **live_ids}
+                    _write_symbols_cache(merged_syms)
+                    _write_company_ids_cache(merged_ids)
+                    company_name = live_syms.get(sym, "")
+                    company_id   = live_ids.get(sym, "")
+            except Exception as _e:
+                logger.debug("AutoSuggest live lookup failed: %s", _e)
+
+        # 3. Report what we found
+        if company_name:
+            print(f"  {Fore.GREEN}Found:{Style.RESET_ALL} {sym} — {company_name}")
+        else:
+            import difflib
+            all_known = list((_read_symbols_cache() or {}).keys())
+            close = difflib.get_close_matches(sym, all_known, n=3, cutoff=0.72)
+            if close:
+                print(f"\n  {Fore.YELLOW}{sym} not found in current NEPSE listings.")
+                print(f"  Did you mean: {', '.join(close)}?{Style.RESET_ALL}")
+            else:
+                print(f"\n  {Fore.YELLOW}{sym} not found in current NEPSE listings — attempting direct fetch anyway.{Style.RESET_ALL}")
+
+        selected = {"symbol": sym, "name": company_name or sym, "sector": "", "id": company_id}
     else:
         print_section("Main Menu")
         print("  1. Market Overview (NEPSE Index + Sector Analysis)")
@@ -1138,7 +1221,8 @@ Examples:
                 print("\n  Bye!"); sys.exit(0)
         except (KeyboardInterrupt, EOFError):
             print("\n  Bye!"); sys.exit(0)
-            
+
+        companies = _load_companies_with_notice()
         selected = pick_company_interactive(companies)
 
     symbol = selected["symbol"].upper()
@@ -1162,15 +1246,33 @@ Examples:
     print(f"  {Fore.YELLOW}Fetching {y} years of live price data…{Style.RESET_ALL}")
 
     try:
-        df = fetch_history(symbol, company_id=cid, years=y)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            hist_future = executor.submit(
+                fetch_history,
+                symbol,
+                company_id=cid,
+                years=y,
+                return_source=True,
+                allow_company_lookup=True,
+            )
+            live_future = executor.submit(fetch_live_price, symbol, return_source=True)
+
+            df, price_history_source = hist_future.result()
+            live_price, live_price_source = live_future.result()
+
         is_new_listing = len(df) < 60
-        if is_new_listing:
+        is_ultra_new = len(df) < 30
+        if is_ultra_new:
+            print(f"  {Fore.YELLOW}VERY NEW LISTING:{Style.RESET_ALL} Only {len(df)} trading rows available. ML training requires 100+ rows.")
+            print(f"  {Fore.CYAN}Showing available price data and technical snapshot. ML forecast skipped.{Style.RESET_ALL}")
+            opt = False
+            trials = 0
+        elif is_new_listing:
             print(f"  {Fore.YELLOW}NEW LISTING DETECTED:{Style.RESET_ALL} Only {len(df)} trading rows. Using lighter settings.")
             opt = False
             trials = 3
         
         # Patch absolute latest price if market is open
-        live_price = fetch_live_price(symbol)
         if live_price is not None and live_price > 0:
             now_dt = datetime.now()
             last_row_date = df["date"].iloc[-1].date()
@@ -1194,8 +1296,12 @@ Examples:
                     df = pd.concat([df, new_row], ignore_index=True)
 
         print(f"  Loaded {len(df)} rows ({df['date'].iloc[0].strftime('%Y-%m-%d')} → {df['date'].iloc[-1].strftime('%Y-%m-%d')})")
+        print(f"  Price Source : {price_history_source}")
+        print(f"  Live Source  : {live_price_source}")
     except RuntimeError as e:
         print(f"\n  {Fore.RED}Error: {e}{Style.RESET_ALL}")
+        print(f"  {Fore.YELLOW}Tried: MeroLagani → NepalStock API → ShareSansar{Style.RESET_ALL}")
+        print(f"  {Fore.YELLOW}Check the symbol spelling, your internet connection, or try again later.{Style.RESET_ALL}")
         sys.exit(1)
 
     n = max(5, min(10, args.predict))
@@ -1209,6 +1315,9 @@ Examples:
         ollama_model=args.ollama_model,
         seed=args.seed,
         debug=args.debug,
+        fast_mode=args.fast,
+        data_sources={"price_history": price_history_source, "live_price": live_price_source},
+        started_at=started_at,
     )
 
     if not args.symbol:

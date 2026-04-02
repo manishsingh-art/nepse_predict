@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import date
 
+from nepse_date_utils import ad_to_bs_ymd, validate_ad_bs_mapping
+from nepse_live import _determine_market_status
 from nepse_market_calendar import NepseMarketCalendar
 from prediction_engine import set_global_determinism
-from nepse_date_utils import validate_ad_bs_mapping
 
 
 def test_weekend_rules():
@@ -18,6 +19,17 @@ def test_weekend_rules():
 def test_ad_bs_roundtrip():
     for d in [date(2026, 3, 31), date(2026, 4, 1), date(2025, 10, 20)]:
         validate_ad_bs_mapping(d)
+    assert ad_to_bs_ymd(date(2026, 4, 1)) == (2082, 12, 18)
+
+
+def test_market_status_prefers_live_data():
+    status = _determine_market_status(date(2026, 4, 1), True, "nepalstock_active_securities")
+    assert status["label"] == "OPEN"
+
+
+def test_market_status_avoids_static_holiday_close():
+    status = _determine_market_status(date(2026, 4, 1), False, "live_feed_unavailable")
+    assert status["label"] == "LIKELY OPEN"
 
 
 def test_determinism_seed():

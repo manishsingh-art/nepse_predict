@@ -217,11 +217,49 @@ def _close_trade(
     return None
 
 
-def generate_signals(predictions: pd.DataFrame, config: Optional[BacktestConfig] = None) -> pd.DataFrame:
+def generate_signals(
+    predictions: pd.DataFrame,
+    config: Optional[BacktestConfig] = None,
+    meta_predictions: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """
+    Convert walk-forward predictions into position signals.
+
+    Parameters
+    ----------
+    predictions : pd.DataFrame
+        Output of ``pipeline.walk_forward_predictions()``.
+    config : BacktestConfig, optional
+        Strategy configuration; defaults to ``BacktestConfig()``.
+    meta_predictions : pd.DataFrame, optional
+        Output of ``MetaLabeler.predict_frame()``.  When supplied, the
+        ``meta_should_trade`` column (0/1) is used to gate new entries:
+        a value of 0 blocks the confirmation streak, sets
+        ``decision_reason = "meta_filter"``, and logs the meta confidence.
+        Existing open positions are never forcibly exited by the meta gate
+        — it only prevents new entries.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input frame with signal-state columns appended.
+    """
     cfg = config or BacktestConfig()
     out = predictions.copy().sort_values("trade_date").reset_index(drop=True)
     if out.empty:
         return out
+
+    # ── Build a per-row meta lookup keyed by index ────────────────────────
+    # meta_predictions is aligned to predictions by position (both sorted by
+    # trade_date after the call to predict_frame in pipeline.py).
+    meta_should_trade_arr: Optional[np.ndarray] = None
+    meta_confidence_arr: Optional[np.ndarray]   = None
+    if meta_predictions is not None and not meta_predictions.empty:
+        mp = meta_predictions.copy().sort_values("trade_date").reset_index(drop=True)
+        if "meta_should_trade" in mp.columns and len(mp) == len(out):
+            meta_should_trade_arr = mp["meta_should_trade"].to_numpy(dtype=int)
+            if "meta_confidence" in mp.columns:
+                meta_confidence_arr = mp["meta_confidence"].to_numpy(dtype=float)
 
     state_rows: List[Dict[str, Any]] = []
     current_weight = 0.0
@@ -231,7 +269,7 @@ def generate_signals(predictions: pd.DataFrame, config: Optional[BacktestConfig]
     confirmation_period = max(int(cfg.confirmation_period), 1)
     total_cost_rate = float(cfg.fee_rate) + float(cfg.slippage_rate)
 
-    for _, row in out.iterrows():
+    for i, (_, row) in enumerate(out.iterrows()):
         pred_ret = _safe_float(row.get("predicted_return"), 0.0)
         dir_prob = float(np.clip(_safe_float(row.get("direction_prob"), 0.5), 0.0, 1.0))
         strength = _signal_strength(pred_ret, dir_prob)
@@ -248,6 +286,15 @@ def generate_signals(predictions: pd.DataFrame, config: Optional[BacktestConfig]
             size_multiplier=float(regime_behavior["size_multiplier"]),
         )
         in_cooldown = current_weight <= 0.0 and cooldown_remaining > 0
+
+        # ── Meta gate: resolve should_trade for this row ──────────────────
+        meta_blocked  = False
+        meta_conf_val = 1.0
+        if meta_should_trade_arr is not None and i < len(meta_should_trade_arr):
+            meta_blocked = (meta_should_trade_arr[i] == 0)
+            if meta_confidence_arr is not None:
+                meta_conf_val = float(meta_confidence_arr[i])
+        row_meta_should_trade = 0 if meta_blocked else 1
 
         entry_triggered = False
         exit_triggered = False
@@ -294,13 +341,23 @@ def generate_signals(predictions: pd.DataFrame, config: Optional[BacktestConfig]
                 and size > 0.0
             )
 
-            if base_entry_ready:
+            # Meta gate: if meta says don't trade, reset streak regardless of
+            # other conditions.  Applied AFTER base_entry_ready to preserve
+            # diagnostic information about which primary criterion would have
+            # triggered.
+            if meta_blocked and base_entry_ready:
+                confirmation_streak = 0
+                decision_reason = "meta_filter"
+            elif base_entry_ready:
                 confirmation_streak += 1
             else:
                 confirmation_streak = 0
+
             confirmation_ready = confirmation_streak >= confirmation_period
 
-            if in_cooldown:
+            if decision_reason == "meta_filter":
+                pass  # already set above
+            elif in_cooldown:
                 decision_reason = "cooldown"
             elif _regime_blocks_entry(row.get("regime")):
                 confirmation_streak = 0
@@ -358,6 +415,9 @@ def generate_signals(predictions: pd.DataFrame, config: Optional[BacktestConfig]
                 "exit_triggered": bool(exit_triggered),
                 "exit_blocked_by_hold": bool(exit_blocked_by_hold),
                 "decision_reason": decision_reason,
+                "meta_should_trade": row_meta_should_trade,
+                "meta_confidence": round(meta_conf_val, 6),
+                "meta_filtered": bool(meta_blocked and not entry_triggered),
             }
         )
 
@@ -535,6 +595,48 @@ def run_backtest(
         "buy_hold_return_pct": round(float(buy_hold_return) * 100.0, 4),
         "alpha_pct": round(float(alpha) * 100.0, 4),
     }
+
+    # ── Enhanced Evaluation Metrics ───────────────────────────────────────
+    # trade_precision_pct: among completed trades, % with positive net PnL.
+    # Identical to win_rate_pct but named to match the "precision" framing
+    # in the meta-labeling literature (precision = TP / (TP + FP)).
+    summary["trade_precision_pct"] = summary["win_rate_pct"]
+
+    # meta_filter_rate_pct: fraction of signal rows where the meta-labeler
+    # blocked a potential entry.  Populated only when meta_predictions were
+    # used (indicated by presence of "meta_filtered" column in signals).
+    if "meta_filtered" in df.columns:
+        n_filtered = int(df["meta_filtered"].sum())
+        summary["meta_filter_rate_pct"] = round(
+            n_filtered / max(len(df), 1) * 100.0, 2
+        )
+    else:
+        summary["meta_filter_rate_pct"] = 0.0
+
+    # sharpe_no_meta_pct / max_drawdown_no_meta_pct: estimate the baseline
+    # performance WITHOUT the meta filter by treating every row that had a
+    # positive predicted_return as an entry (flat/long binary strategy).
+    # This is a simplified baseline — not a full simulation — that lets the
+    # caller see whether the meta filter improved the risk-adjusted return.
+    if "predicted_return" in df.columns and "actual_return" in df.columns:
+        raw_positions = (df["predicted_return"].astype(float) > 0).astype(float).values
+        raw_actual    = df["actual_return"].astype(float).values
+        raw_rets      = raw_positions * raw_actual
+        raw_std       = float(np.std(raw_rets))
+        raw_sharpe    = (
+            0.0 if raw_std <= 1e-12
+            else float(np.sqrt(252.0) * np.mean(raw_rets) / raw_std)
+        )
+        raw_eq        = np.cumprod(1.0 + raw_rets)
+        raw_peak      = np.maximum.accumulate(raw_eq)
+        raw_dd        = float((raw_eq / (raw_peak + 1e-9) - 1.0).min()) * 100.0
+        summary["sharpe_no_meta"]          = round(raw_sharpe, 4)
+        summary["max_drawdown_no_meta_pct"] = round(raw_dd, 4)
+        summary["sharpe_improvement"]       = round(sharpe - raw_sharpe, 4)
+    else:
+        summary["sharpe_no_meta"]           = 0.0
+        summary["max_drawdown_no_meta_pct"] = 0.0
+        summary["sharpe_improvement"]       = 0.0
 
     return BacktestResult(
         summary=summary,

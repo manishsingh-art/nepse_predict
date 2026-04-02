@@ -27,6 +27,7 @@ class DecisionInputs:
     volatility_pct: float                 # ATR% or regime vol%
     illiquid_flag: float = 0.0            # 0/1
     technical_signals: Optional[List[Dict[str, Any]]] = None
+    meta_should_trade: Optional[int] = None  # 0=skip, 1=proceed, None=unavailable
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,18 @@ def _tech_score(signals: Optional[List[Dict[str, Any]]]) -> float:
 
 
 def compute_final_decision(inp: DecisionInputs) -> FinalDecision:
+    # Meta-labeler gate: when the second-stage model signals low confidence,
+    # skip the trade entirely.  This is checked before any scoring so that
+    # the rationale clearly identifies the meta filter as the cause.
+    if inp.meta_should_trade == 0:
+        return FinalDecision(
+            action="HOLD",
+            confidence=0.0,
+            score=0.0,
+            rationale="meta_labeler: low-confidence trade filtered",
+            components={"meta_gate": -1.0},
+        )
+
     # Model score: centered at 0.5 with mild amplification.
     model = _clip((float(inp.direction_prob) - 0.5) * 2.0, -1.0, 1.0)
 

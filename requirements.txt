@@ -25,6 +25,7 @@ tabulate>=0.9.0
 requests>=2.31.0
 lxml>=4.9.0
 beautifulsoup4>=4.12.0
+nepali-datetime>=1.0.8
 
 # ── Optional: faster data access ─────────────────────────────────────────────
 # ta>=0.11.0              # Alternative TA library
