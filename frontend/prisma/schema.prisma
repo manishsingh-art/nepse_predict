@@ -1,0 +1,79 @@
+// Prisma schema for the NEPSE Prediction Dashboard
+// SQLite for local dev; switch provider to "postgresql" + restore @db.Date for production
+// Run: npx prisma db push
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Stock {
+  id           String        @id @default(uuid())
+  symbol       String        @unique
+  name         String
+  sector       String?
+  nepseId      Int?          // merolagani company ID; higher value = newer listing
+  createdAt    DateTime      @default(now())
+
+  predictions  Prediction[]
+  actualPrices ActualPrice[]
+
+  @@index([symbol])
+  @@index([nepseId])
+}
+
+// NOTE: SQLite has no native enum — action stored as String (BUY | SELL | HOLD | AVOID)
+model Prediction {
+  id              String   @id @default(uuid())
+  symbol          String
+  stock           Stock    @relation(fields: [symbol], references: [symbol])
+  predictionDate  DateTime
+  targetDate      DateTime
+  predictedClose  Float
+  predictedReturn Float
+  directionProb   Float
+  lowerBound      Float
+  upperBound      Float
+  modelConfidence Float
+  regime          String
+  sentimentScore  Float               @default(0)
+  trapScore       Float               @default(0)
+  action          String              // BUY | SELL | HOLD | AVOID
+  score           Float               @default(0)
+  createdAt       DateTime            @default(now())
+
+  accuracy        PredictionAccuracy?
+
+  @@index([predictionDate])
+  @@index([targetDate])
+  @@index([symbol])
+  @@index([symbol, predictionDate])
+}
+
+model ActualPrice {
+  id        String   @id @default(uuid())
+  symbol    String
+  stock     Stock    @relation(fields: [symbol], references: [symbol])
+  date      DateTime
+  close     Float
+  volume    Float    @default(0)
+  createdAt DateTime @default(now())
+
+  @@unique([symbol, date])
+  @@index([date])
+  @@index([symbol])
+}
+
+model PredictionAccuracy {
+  id               String     @id @default(uuid())
+  predictionId     String     @unique
+  prediction       Prediction @relation(fields: [predictionId], references: [id])
+  actualClose      Float
+  errorPct         Float
+  directionCorrect Boolean
+  createdAt        DateTime   @default(now())
+}

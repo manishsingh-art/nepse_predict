@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-[#0a0e1a] text-slate-200 min-h-screen;
+  }
+
+  /* Custom scrollbar for trading dashboard feel */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-[#0a0e1a];
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-[#1e2a45] rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-[#2a3a5c];
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-[#111827] border border-[#1e2a45] rounded-xl;
+  }
+
+  .card-hover {
+    @apply card transition-all duration-200 hover:border-[#2a3a5c] hover:bg-[#162032];
+  }
+
+  .skeleton {
+    @apply bg-gradient-to-r from-[#1e2a45] via-[#2a3a5c] to-[#1e2a45]
+      bg-[length:200%_100%] animate-shimmer rounded;
+  }
+
+  .badge-buy {
+    @apply bg-emerald-900/40 text-emerald-400 border border-emerald-700/50
+      text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wide;
+  }
+
+  .badge-sell {
+    @apply bg-red-900/40 text-red-400 border border-red-700/50
+      text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wide;
+  }
+
+  .badge-hold {
+    @apply bg-amber-900/40 text-amber-400 border border-amber-700/50
+      text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wide;
+  }
+
+  .badge-avoid {
+    @apply bg-purple-900/40 text-purple-400 border border-purple-700/50
+      text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wide;
+  }
+
+  .stat-label {
+    @apply text-xs text-slate-500 uppercase tracking-wider font-medium;
+  }
+
+  .stat-value {
+    @apply text-lg font-bold text-slate-100 font-mono tabular-nums;
+  }
+
+  .table-row-hover {
+    @apply hover:bg-[#162032] transition-colors duration-100;
+  }
+}
