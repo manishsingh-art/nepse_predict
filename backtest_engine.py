@@ -1,18 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+try:
+    from config.nepse_rules import get_effective_rules
+except Exception:
+    get_effective_rules = None  # type: ignore
+
+
+def _default_fee_rate() -> float:
+    if get_effective_rules:
+        return float(get_effective_rules()["FEE_RATE"])
+    return 0.004
+
+
+def _default_slippage_rate() -> float:
+    if get_effective_rules:
+        return float(get_effective_rules()["SLIPPAGE_RATE"])
+    return 0.001
 
 
 @dataclass
 class BacktestConfig:
     initial_capital: float = 100000.0
     max_position_size: float = 0.20
-    fee_rate: float = 0.004
-    slippage_rate: float = 0.001
+    fee_rate: float = field(default_factory=_default_fee_rate)
+    slippage_rate: float = field(default_factory=_default_slippage_rate)
     entry_threshold: float = 0.003
     exit_threshold: float = 0.000
     min_direction_prob: float = 0.55
@@ -574,7 +591,13 @@ def run_backtest(
 
     mean_ret = float(np.mean(portfolio_returns)) if portfolio_returns else 0.0
     std_ret = float(np.std(portfolio_returns)) if portfolio_returns else 0.0
-    sharpe = 0.0 if std_ret <= 1e-12 else float(np.sqrt(252.0) * mean_ret / std_ret)
+    try:
+        from config.nepse_rules import annualized_sharpe_factor
+
+        ann = float(annualized_sharpe_factor())
+    except Exception:
+        ann = float(np.sqrt(252.0))
+    sharpe = 0.0 if std_ret <= 1e-12 else float(ann * mean_ret / std_ret)
     strategy_return = (float(eq[-1]) / float(cfg.initial_capital) - 1.0) if len(eq) else 0.0
 
     initial_price = _safe_float(df.iloc[0].get("signal_close"), _safe_float(df.iloc[0].get("target_close"), 0.0))
@@ -623,9 +646,15 @@ def run_backtest(
         raw_actual    = df["actual_return"].astype(float).values
         raw_rets      = raw_positions * raw_actual
         raw_std       = float(np.std(raw_rets))
+        try:
+            from config.nepse_rules import annualized_sharpe_factor
+
+            ann = float(annualized_sharpe_factor())
+        except Exception:
+            ann = float(np.sqrt(252.0))
         raw_sharpe    = (
             0.0 if raw_std <= 1e-12
-            else float(np.sqrt(252.0) * np.mean(raw_rets) / raw_std)
+            else float(ann * np.mean(raw_rets) / raw_std)
         )
         raw_eq        = np.cumprod(1.0 + raw_rets)
         raw_peak      = np.maximum.accumulate(raw_eq)

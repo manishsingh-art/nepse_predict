@@ -28,6 +28,21 @@ class MarketRegimeDetector:
             return {"regime": "NEUTRAL", "confidence": 0, "color": "white"}
             
         try:
+            try:
+                from config.nepse_rules import get_effective_rules
+
+                R = get_effective_rules()
+            except Exception:
+                R = {}
+            v_bull_ok = float(R.get("REGIME_VOL_BULL_HEALTHY_MAX", 3.5))
+            v_bull_par = float(R.get("REGIME_VOL_BULL_PARABOLIC_MIN", 5.5))
+            v_bear_slow = float(R.get("REGIME_VOL_BEAR_SLOW_MAX", 2.5))
+            v_side = float(R.get("REGIME_VOL_SIDEWAYS_MAX", 1.5))
+            vr_side = float(R.get("REGIME_VOL_RATIO_SIDEWAYS_MAX", 0.8))
+            trap_manip = float(R.get("REGIME_TRAP_MANIPULATION", 60))
+            trap_bull_ex = float(R.get("REGIME_TRAP_BULL_EXHAUST", 50))
+            hhi_quiet = float(R.get("REGIME_BUY_HHI_QUIET", 2000))
+
             cl = df["close"].astype(float)
             vol = df["volume"].astype(float)
             
@@ -69,7 +84,7 @@ class MarketRegimeDetector:
             color = "yellow"
             
             if is_uptrend:
-                if trap_score > 50:
+                if trap_score > trap_bull_ex:
                     regime = "BULL (Bull Trap / Exhaustion)"
                     color = "cyan"
                     confidence = 0.4
@@ -81,11 +96,11 @@ class MarketRegimeDetector:
                     regime = "BULL ➔ Transitioning to BEAR (Distribution)"
                     color = "red"
                     confidence = 0.5
-                elif vol_ratio > 1.2 and volatility_pct < 3.5:
+                elif vol_ratio > 1.2 and volatility_pct < v_bull_ok:
                     regime = "BULL (Healthy Accumulation)"
                     color = "green"
                     confidence = 0.8
-                elif volatility_pct > 5.5:
+                elif volatility_pct > v_bull_par:
                     regime = "BULL (Parabolic / Overextended)"
                     color = "bright_green"
                     confidence = 0.6
@@ -102,7 +117,7 @@ class MarketRegimeDetector:
                     regime = "BEAR ➔ Transitioning to BULL (Bottoming)"
                     color = "bright_green"
                     confidence = 0.6
-                elif volatility_pct < 2.5:
+                elif volatility_pct < v_bear_slow:
                     regime = "BEAR (Slow Bleed / Distribution)"
                     color = "magenta"
                     confidence = 0.7
@@ -110,12 +125,12 @@ class MarketRegimeDetector:
                     regime = "BEAR (Trending Down)"
                     color = "red"
                     confidence = 0.8
-            elif trap_score > 60 or (vol_ratio > 3 and smart_money_info and smart_money_info.get("wash_trading_alert")):
+            elif trap_score > trap_manip or (vol_ratio > 3 and smart_money_info and smart_money_info.get("wash_trading_alert")):
                 regime = "MANIPULATION / PUMP-AND-DUMP"
                 color = "bright_red"
                 confidence = 0.5
-            elif volatility_pct < 1.5 and vol_ratio < 0.8:
-                if buy_hhi > 2000:
+            elif volatility_pct < v_side and vol_ratio < vr_side:
+                if buy_hhi > hhi_quiet:
                     regime = "ACCUMULATION (Hidden / Quiet)"
                     color = "blue"
                     confidence = 0.7

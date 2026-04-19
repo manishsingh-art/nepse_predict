@@ -37,6 +37,12 @@ except Exception:
     _STATIC_CAL = None
     _HAS_STATIC = False
 
+try:
+    from config.nepse_rules import weekend_weekdays as _weekend_weekdays
+except Exception:
+    def _weekend_weekdays():  # type: ignore
+        return (4, 5)
+
 
 CACHE_DIR = Path(os.path.expanduser("~")) / ".nepse_cache" / "holidays"
 DEFAULT_OVERRIDES_CSV = "nepse_holidays_overrides.csv"
@@ -221,7 +227,7 @@ class NepseMarketCalendar:
         ov = self._overrides.get(dd)
         if ov:
             return ov["action"] == "CLOSE"
-        if dd.weekday() in (4, 5):
+        if dd.weekday() in _weekend_weekdays():
             return True
         is_h, _ = self._api_is_holiday(dd)
         if is_h:
@@ -255,8 +261,8 @@ class NepseMarketCalendar:
             if ov["action"] == "OPEN":
                 return MarketStatus(dd, True, reason=ov.get("reason") or "Manual override: OPEN")
 
-        # Weekend (NEPSE): Friday=4, Saturday=5
-        if dd.weekday() in (4, 5):
+        # Weekend — default NEPSE: Friday/Saturday closed (see ``config.nepse_rules``).
+        if dd.weekday() in _weekend_weekdays():
             return MarketStatus(dd, False, reason="Weekend (Fri/Sat closed)")
 
         # Official holidays (API)
@@ -351,7 +357,7 @@ class NepseMarketCalendar:
             ds = d.isoformat()
             if ds in seen:
                 continue
-            if d.weekday() in (4, 5):
+            if d.weekday() in _weekend_weekdays():
                 continue
 
             api_is, api_name = self._api_is_holiday(d)

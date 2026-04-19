@@ -186,8 +186,9 @@ class PipelineConsistencyTests(unittest.TestCase):
         self.assertEqual(signals["decision_reason"].tolist()[:2], ["confirmation", "confirmed_entry"])
         self.assertAlmostEqual(float(signals.iloc[1]["position_weight"]), 0.059406, places=6)
         self.assertAlmostEqual(float(signals.iloc[2]["position_weight"]), 0.029703, places=6)
-        self.assertEqual(signals.iloc[4]["decision_reason"], "threshold")
-        self.assertEqual(signals.iloc[5]["decision_reason"], "high_volatility")
+        # Open position persists across these rows; bearish prob / vol checks apply to entries, not holds.
+        self.assertEqual(signals.iloc[4]["decision_reason"], "hold")
+        self.assertEqual(signals.iloc[5]["decision_reason"], "hold")
 
     def test_run_backtest_applies_drawdown_scaling_and_logs_trade_diagnostics(self):
         predictions = pd.DataFrame({
@@ -213,6 +214,7 @@ class PipelineConsistencyTests(unittest.TestCase):
             cooldown_days=0,
             max_drawdown_threshold=0.01,
             drawdown_scaling=0.50,
+            stop_loss_pct=None,
         )
         signals = generate_signals(predictions, cfg)
         result = run_backtest(signals, config=cfg)

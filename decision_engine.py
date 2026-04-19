@@ -63,6 +63,15 @@ def _tech_score(signals: Optional[List[Dict[str, Any]]]) -> float:
 
 
 def compute_final_decision(inp: DecisionInputs) -> FinalDecision:
+    try:
+        from config.nepse_rules import get_effective_rules
+
+        _R = get_effective_rules()
+        ret_ref = float(_R["DECISION_EXPECTED_RET_REF_PCT"])
+        vol_ref = float(_R["DECISION_VOLATILITY_REF_PCT"])
+    except Exception:
+        ret_ref, vol_ref = 8.0, 8.0
+
     # Meta-labeler gate: when the second-stage model signals low confidence,
     # skip the trade entirely.  This is checked before any scoring so that
     # the rationale clearly identifies the meta filter as the cause.
@@ -78,8 +87,8 @@ def compute_final_decision(inp: DecisionInputs) -> FinalDecision:
     # Model score: centered at 0.5 with mild amplification.
     model = _clip((float(inp.direction_prob) - 0.5) * 2.0, -1.0, 1.0)
 
-    # Expected return score: saturate at +/-8% over 5 days.
-    ret = _clip(float(inp.expected_ret_5d_pct) / 8.0, -1.0, 1.0)
+    # Expected return score: saturate relative to policy reference (default ±8% over ~5 sessions).
+    ret = _clip(float(inp.expected_ret_5d_pct) / max(ret_ref, 1e-9), -1.0, 1.0)
 
     tech = _tech_score(inp.technical_signals)
 
@@ -100,7 +109,7 @@ def compute_final_decision(inp: DecisionInputs) -> FinalDecision:
 
     # Penalties: trap, volatility, illiquidity -> reduce aggressiveness.
     trap_pen = _clip(float(inp.trap_score) / 100.0, 0.0, 1.0)
-    vol_pen = _clip(float(inp.volatility_pct) / 8.0, 0.0, 1.0)  # 8% ATR is very high
+    vol_pen = _clip(float(inp.volatility_pct) / max(vol_ref, 1e-9), 0.0, 1.0)
     illiq_pen = _clip(float(inp.illiquid_flag), 0.0, 1.0)
 
     # Composite (weights tuned for low-liquidity markets)

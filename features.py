@@ -33,8 +33,9 @@ session t has closed (close[t] and earlier).  Specifically:
 
 Special cases:
   • Lag features (close_lag_k, ret_lag_k) use shift(k ≥ 1) — strictly past.
-  • `illiquid_flag` uses a SHIFTED rolling quantile:
-        vol.shift(1).rolling(60).quantile(0.20)
+  • `illiquid_flag` uses a SHIFTED rolling quantile at
+        ``config.nepse_rules.NEPSE_RULES["ILLIQUID_VOLUME_QUANTILE"]`` (default 0.20):
+        vol.shift(1).rolling(60).quantile(...)
     so current volume is EXCLUDED from its own threshold (LEAK-02 fix).
   • `bb_squeeze` uses a SHIFTED quantile on BB-width for the same reason
     (LEAK-03 fix).
@@ -472,7 +473,13 @@ def build_features(
     # ── 26. Liquidity / Microstructure ───────────────────────────────────────
     # FIX (LEAK-02): vol.shift(1).rolling(60) excludes current-bar volume from
     # the quantile threshold — no self-inclusion.
-    vol_p20 = vol.shift(1).rolling(60, min_periods=20).quantile(0.20)
+    try:
+        from config.nepse_rules import get_effective_rules
+
+        _iq = float(get_effective_rules()["ILLIQUID_VOLUME_QUANTILE"])
+    except Exception:
+        _iq = 0.20
+    vol_p20 = vol.shift(1).rolling(60, min_periods=20).quantile(_iq)
     cols["illiquid_flag"] = (vol < vol_p20).astype(float)
     cols["vol_z_abs"]     = vol_zscore.abs()
 
@@ -485,7 +492,13 @@ def build_features(
     # ── 28. 52-Week Price Rank ────────────────────────────────────────────────
     # min_periods is capped to the actual window so short test frames (<50 rows)
     # don't raise a ValueError ("min_periods must be <= window").
-    window_252  = min(252, len(df))
+    try:
+        from config.nepse_rules import get_effective_rules
+
+        _pr_bars = int(get_effective_rules().get("PRICE_RANK_LOOKBACK_BARS", 252))
+    except Exception:
+        _pr_bars = 252
+    window_252  = min(_pr_bars, len(df))
     min_p_252   = min(50, window_252)
     rolling_min = cl.rolling(window_252, min_periods=min_p_252).min()
     rolling_max = cl.rolling(window_252, min_periods=min_p_252).max()

@@ -9,7 +9,7 @@ Stacked ensemble:
 
 Nepal-aware features:
   - Skips non-trading days in forecast horizon using NepalMarketCalendar
-  - Uses NEPSE circuit-breaker (±10% per session)
+  - Uses NEPSE session price band from ``config.nepse_rules`` (default ±10%)
 
 Training:
   - Primary target: next-session close-to-close return
@@ -104,6 +104,13 @@ try:
 except Exception:
     HAS_DATE_VALIDATION = False
 
+try:
+    from config.nepse_rules import annualized_sharpe_factor, clip_circuit_price, get_effective_rules
+except Exception:
+    annualized_sharpe_factor = None  # type: ignore
+    clip_circuit_price = None  # type: ignore
+    get_effective_rules = None  # type: ignore
+
 MODEL_CACHE_DIR = Path(os.path.expanduser("~")) / ".nepse_cache" / "models"
 
 
@@ -174,8 +181,15 @@ def _impute(X: pd.DataFrame) -> np.ndarray:
 
 
 def _clip_circuit(price: float, prev_price: float) -> float:
-    """Enforce NEPSE ±10% circuit-breaker rule."""
-    return float(np.clip(price, prev_price * 0.90, prev_price * 1.10))
+    """Enforce NEPSE price band (default ±10%; see ``config.nepse_rules``)."""
+    if clip_circuit_price is not None:
+        return clip_circuit_price(price, float(prev_price))
+    pct = 0.10
+    if get_effective_rules:
+        pct = float(get_effective_rules().get("CIRCUIT_BREAKER_PCT", 0.10))
+    lo = float(prev_price) * (1.0 - pct)
+    hi = float(prev_price) * (1.0 + pct)
+    return float(np.clip(price, lo, hi))
 
 
 def ensemble_predict(models: Dict[str, Any], X) -> np.ndarray:
@@ -251,7 +265,8 @@ def strategy_sharpe(y_true_ret: np.ndarray, y_pred_ret: np.ndarray) -> float:
     sigma = float(np.std(strat_rets))
     if sigma <= 1e-12:
         return 0.0
-    return float(np.sqrt(252.0) * np.mean(strat_rets) / sigma)
+    ann = float(annualized_sharpe_factor()) if annualized_sharpe_factor else np.sqrt(252.0)
+    return float(ann * np.mean(strat_rets) / sigma)
 
 
 def mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -750,7 +765,10 @@ class NEPSEEnsemble:
             try:
                 from stabilization import StabilizationParams, stabilize_forecast_step
 
-                hist_rets = df_work["close"].astype(float).pct_change().dropna().values[-252:]
+                _lb = 252
+                if get_effective_rules:
+                    _lb = int(get_effective_rules().get("PRICE_RANK_LOOKBACK_BARS", 252))
+                hist_rets = df_work["close"].astype(float).pct_change().dropna().values[-_lb:]
                 feats_dict = last_row.to_dict(orient="records")[0]
                 atr_pct = float(feats_dict.get("atr_pct_14", 0.03) or 0.03)
                 if atr_pct <= 0:
@@ -876,7 +894,8 @@ class NEPSEEnsemble:
                 positions = (preds > 0).astype(float)
                 strat_rets = positions * yvl
                 sigma = float(np.std(strat_rets))
-                sharpe = 0.0 if sigma <= 1e-12 else float(np.sqrt(252.0) * np.mean(strat_rets) / sigma)
+                ann = float(annualized_sharpe_factor()) if annualized_sharpe_factor else float(np.sqrt(252.0))
+                sharpe = 0.0 if sigma <= 1e-12 else float(ann * np.mean(strat_rets) / sigma)
                 return -sharpe
             return mean_absolute_error(yvl, preds)
 

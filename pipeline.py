@@ -7,6 +7,12 @@ import pandas as pd
 
 from backtest_engine import BacktestConfig, BacktestResult, generate_signals, run_backtest
 from cache import dataframe_fingerprint, get_cache_path, load_pickle, save_pickle
+
+try:
+    from config.nepse_rules import rules_fingerprint
+except Exception:
+    def rules_fingerprint() -> str:  # type: ignore
+        return "norules"
 from features import add_market_features, add_targets, build_features, clean_ohlcv_data, get_feature_cols
 from models import NEPSEEnsemble, ForecastPoint, purged_walk_forward_splits
 from regime import MarketRegimeDetector
@@ -308,6 +314,7 @@ def _model_cache_file(
             f"f{n_folds or 0}",
             f"t{int(n_opt_trials)}",
             f"r{int(random_state)}",
+            f"rules{rules_fingerprint()}",
         ]
     )
     return get_cache_path("models", f"{cache_token}.pkl")
